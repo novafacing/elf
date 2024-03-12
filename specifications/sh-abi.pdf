@@ -1,0 +1,411 @@
+We wrote this note as a diff to the i386 version of the supplement.
+
+----
+System V ABI SH-3/SH-4 Architecture Processor Supplement
+
+
+1. Introduction
+
+2. Software Installation
+
+3. Low-level System Information
+
+  Operating System Interface
+    Virtual Address Space
+      Page Size
+      Virtual Address Assignment
+
+----
+Figure 3-xx: Virtual Address Configuration
+
+		   Reserved			End of memory
+       0x7bffffff  Stack and
+		   dynamic segments
+
+
+                0  Lodable segments		Beginning of memory
+----
+
+      Process Stack and Registers
+
+        The registers listed below have the specified contents at
+        process entry:
+
+          r0  A non-zero value specifies a function pointer the application
+              should register with atexit(BA_OS). If r0 contains zero, no
+              action is required.
+          r15 The stack pointer holds the address of the bottm of the stack
+              which must be doubleword(8-byte) aligend.
+          pr  The return address register is set to zero.
+
+      Code Model Overview
+
+	  We denote the register pointing the global offset table as GP.
+	  GP is NOT specified in this supplement and may be gbr or one of
+	  the general registers. We assume that R12 is GP in this supplement
+	  for examples.
+
+          name@GOT
+            This expression denotes a GP-relative reference to the global
+            offset table entry for the symbol name. The GP register contains
+            the absolute address of the global offset table.
+          name@GOTOFF
+            This expression denotes a GP-relative reference to the symbol
+            name.
+          name@PLT
+            This expression denotes a PC-relative reference to the procedure
+	    linkage table entry for the symbol name.
+          _GLOBAL_OFFSET_TABLE_
+            The symbol _GLOBAL_OFFSET_TABLE_ is used to access the global
+            offset table. When an instruction uses the symbol, it sees the
+            offset between the current instruction and the global offset table
+            as the symbol value.
+
+      Position-Independent Function Prologue and Epilogue
+
+        We give examples position-independent code using GP register as
+        the global pointer register, though the global pointer register
+        is depending on the specific compiler.
+
+----
+Figure 3-xx: Podition-Independent Function Prologue
+
+	mov.l	1f,r1
+	mova	1f,r12
+	bra	2f
+	 add	r1,r12		! GOT-pc+pc --> GOT
+	.align	2
+1:	.long	_GLOBAL_OFFSET_TABLE_
+2:	...
+----
+	This code above could be optimized. The .long _GLOBAL_OFFSET_TABLE_
+	pseudo instruction may be moved to the afterword to save the branch
+	on function entry.
+
+----
+Figure 3-xx: Podition-Independent Function Epilogue
+	...
+----
+
+      Data Objects
+
+----
+Figure 3-xx: Podition-independent Data Access
+
+		C				Assembly
+
+        extern int src;			.globl	src, dst, ptr
+        extern int dst;
+        extern int *ptr;
+	ptr = &dst;			mov.l	1f,r0
+					mov.l	@(r0,r12),r2
+					mov.l	2f,r0
+					mov.l	@(r0,r12),r3
+					mov.l	r3,@r2
+					
+
+        ...				...
+
+	*ptr = src;			mov.l	1f,r0
+					mov.l	@(r0,r12),r2
+					mov.l	3f,r0
+					mov.l	@(r0,r12),r3
+					mov.l	@r2,r4
+					mov.l	@r3,r5
+					mov.l	r5,@r4
+					...
+
+				1:	.long	ptr@GOT
+				2:	.long	dst@GOT
+				3:	.long	src@GOT
+
+----
+----
+Figure 3-xx: Podition-independent Static Data Access
+
+		C				Assembly
+
+        static int src;
+        static int dst;
+        static int *ptr;
+	ptr = &dst;			mov.l	1f,r0
+					mov.l	2f,r2
+					add	r12,r2
+					mov.l	r2,@(r0,r12)
+        ...				...
+
+	*ptr = src;			mov.l	1f,r0
+					mov.l	@(r0,r12),r2
+					mov.l	3f,r0
+					mov.l	@(r0,r12),r3
+					mov.l	r3,@r2
+					...
+
+				1:	.long	ptr@GOTOFF
+				2:	.long	dst@GOTOFF
+				3:	.long	src@GOTOFF
+
+----
+	Those code above could be optimized.
+
+
+      Function Calls
+
+----
+Figure 3-xx: Podition-independent Direct Function Call
+
+		C				Assembly
+
+        extern void foo ();		.globl foo
+        foo ();				mov.l	1f,r1
+					mova	1f,r0
+					add	r0,r1
+					jsr	@r1
+					...
+
+				1:	.long	foo@PLT
+
+	An implementation may also do direct PIC calls using bsrf
+
+		C				Assembly
+
+        extern void foo ();		.globl foo
+        foo ();				mov.l	1f,r1
+					bsrf	r1
+					nop
+				2:
+					...
+				1:	.long .-2b+foo@PLT
+----
+----
+Figure 3-xx: Podition-independent Indirect Function Call
+
+		C				Assembly
+
+        extern void foo ();		.globl foo, ptr
+	extern void (*ptr) ();
+
+        ptr = foo;			mov.l	1f,r0
+					mov.l	@(r0,r12),r2
+					mov.l	2f,r0
+					mov.l	@(r0,r12),r3
+					mov.l	r2,@r3
+	...				...
+
+	(*ptr) ();			mov.l	2f,r0
+					mov.l	@(r0,r12),r2
+					mov.l	@r2,r0
+					jmp	@r0
+					...
+
+				1:	.long	foo@GOT
+				2:	.long	ptr@GOT
+----
+	Those code above could be optimized.
+
+
+      Branching
+
+4. Object Files
+
+  ELF Header
+  Sections
+    Special Sections
+      .got
+      .plt
+  Symbol Table
+  Relocation
+    Relocation Types
+
+----
+
+A     This means the addend used to compute the value of the relocatable field.
+
+B     This means the base address at which shared object has been loaded into
+      memory during execution.
+
+G     This means the offset into the global offset table at which the address
+      of the relocation entry's symbol will resides during execution.
+
+GOT   This means the address of the global offset table.
+
+L     This means the place (section offset or address) of the procedure linkage
+      table entry for a symbol.
+
+P     This means the place (section offset or address) of the strage unit being
+      relocated (computed using r_offset).
+
+S     This means the value of the symbol whose index resides in the relocation
+      entry.
+
+Figure 4-xx: Relocation Types
+
+	Name	      Value	Field	Calculation
+(base)R_SH_NONE		0	none	none
+      R_SH_DIR32	1
+      R_SH_REL32	2
+      R_SH_DIR8WPN	3
+      R_SH_IND12W	4
+      R_SH_DIR8WPL	5
+      R_SH_DIR8WPZ	6
+      R_SH_DIR8BP	7
+      R_SH_DIR8W	8
+      R_SH_DIR8L	9
+
+
+(new) R_SH_GOT32	0xa0	word32	G + A - P
+      R_SH_PLT32	0xa1	word32	L + A - P
+      R_SH_COPY		0xa2	none	none
+      R_SH_GLOB_DAT	0xa3	word32	S
+      R_SH_JMP_SLOT	0xa4	word32	S
+      R_SH_RELATIVE	0xa5	word32	B + A
+      R_SH_GOTOFF	0xa6	word32	S + A - GOT
+      R_SH_GOTPC	0xa7	word32	GOT - A - P
+
+      Some relocation types have semantics beyond simple calculation.
+
+R_SH_GOT32
+      This relocation type computes the distance from the base of the global
+      offset table to the symbol's global offset table entry. It additionally
+      instructs the link editor to build a global offset table.
+
+R_SH_PLT32
+      This relocation type computes the address of the symbol's procedure
+      linkage table entry and additionally instructs the linkage editor to
+      build a global offset table.
+
+R_SH_COPY
+      The link editor creates this relocation type for dynamic linking.
+      Its offset member refers to a location in a writtable segment. The
+      symbol table index specifies a symbol that should exist both in the
+      current object file and in a shared object. During execution, the
+      dynamic linker copies data associaated with the shared object's symbol
+      to the location specified by the offset.
+
+R_SH_GLOB_DAT
+      This relocation type used to set a global offset table entry to the
+      address of the specified symbol. The special relocation type allows
+      one to determine the correspondence between symbols and global offset
+      table entries.
+
+R_SH_JMP_SLOT
+      The link editor creates this relocation type for dynamic linking.
+      Its offset member gives the location of a procedure linkage table entry.
+      The dynamic linker modifies the procedure linkage table to transfer
+      control to the designated symbol's address.
+
+R_SH_RELATIVE
+      The link editor creates this relocation type for dynamic linking.
+      Its offset member gives the location within a shred object that contains
+      a value representing a relative offset. The dynamic linker computes
+      the corresponding virtual address by adding the virtual address at which
+      the shared object was loaded to the relative address. Relocation entries
+      for this type must specify 0 for the symbol index.
+
+R_SH_GOTOFF
+      This relocation type computes the difference between a symbol's value
+      and the address of the global offset table. It additionally instructs
+      the link editor to build a global offset table.
+
+R_SH_GOTPC
+      This relocation type resembles R_SH_REL32, except it uses the address
+      of the global offset table in its calculation. The symbol referenced
+      in this relocation normally is _GLOBAL_OFFSET_TABLE_, which additionally
+      instructs the link editor to build a global offset table.
+
+----
+
+5. Program Loading and Dynamic Linking
+
+  Program Loading
+  Dynamic Linking
+    Dynamic Section
+    Global Offset Table
+    Function Linkage Table
+
+----
+Figure 5-xx: PLT implementations
+
+Absolute 32-bit version:
+--------------------------
+.PLT0:	mov.l	2f,r2
+	mov.l	1f,r0
+	mov.l	@r0,r0
+	mov.l	@r2,r2
+	jmp	@r0
+	mov	#0,r0
+	nop
+	nop
+	nop
+	nop
+1:	.long	.got + 8
+2:	.long	.got + 4
+
+.PLTn:	mov.l	1f,r0
+	mov.l	3f,r2
+	jmp	@r0
+	 mov	r2,r0
+3:	.long	.PLT0
+0:	mov.l	2f,r1
+	jmp	@r0
+	nop
+	nop
+1:	.long	nameN-in-GOT
+2:	.long	relocation-table-address
+--------------------------
+
+Position-Independent 32-bit version:
+--------------------------
+.PLTn:	mov.l	1f,r0
+	mov.l	@(r0,r12),r0
+	jmp	@r0
+	 nop
+0:	mov.l	@(8,r12),r0	! dynamic linker address
+	mov.l	@(4,r12),r2	! argument to the linker (id of GOT)
+	mov.l	2f,r1		! argument to the linker (reloc offset)
+	jmp	@r0
+	 mov	#0,r0		! here is the MAGIC
+	nop			! pad
+1:	.long	nameN@GOT
+2:	.long	relocation-table-address
+--------------------------
+
+Position-Independent 16-bit version:
+--------------------------
+.PLTn:	mov.w	1f,r0
+9:	mov.l	@(r0,r12),r0	! NOTE! this statement has double meanings
+ 	jmp	@r0
+0:	 mov	#8,r0		! NOTE! this statement has double meanings
+	mov.l	2f,r1		! argument to the linker (reloc number)
+	bra	9b
+	 mov.l	@(4,r12),r2	! argument to the linker (id of GOT)
+1:	.word	nameN@GOT
+2:	.word	entry-number-of-relocation-table
+--------------------------
+	Those code above could be optimized.
+
+----
+
+	Dynamic linker can distinguish which version of PLT as follows:
+
+	  In case of 32-bit version PLT:
+	    r0 = 0
+	    r1 = relocation-table-address
+	    r2 = GOT id
+	  In case of 16-bit version PLT:
+	    r0 = 8
+	    r1 = entry-number-of-relocation-table
+	    r2 = GOT id
+
+	Here, the type of PLT is encoded into R0. Dynamic linker may or
+	may not use the value of R0.
+
+
+    Program Interpreter
+
+
+6. Libraries
+
+7. Developement Environment
+
+8. Execution Environment
