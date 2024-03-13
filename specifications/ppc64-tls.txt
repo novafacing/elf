@@ -1,0 +1,547 @@
+PowerPC64 Specific Thread Local Storage ABI
+For insertion in https://people.redhat.com/drepper/tls.pdf
+
+
+3.4.x  PowerPC64 Specific
+-------------------------
+
+The PowerPC64 TLS ABI is similar to the Alpha model.  The thread-local
+storage data structures follow variant I.  The TCB, tlsoffset calculations
+and definition of __tls_get_addr are identical to Alpha.  r13 is the thread
+pointer, and points 0x7000 past the end of the thread control block.
+Dynamic thread vector pointers point 0x8000 past the start of each TLS
+block. (*)  This allows the first 64K of each block to be addressed from a
+dtv pointer using fewer machine instructions.  The tp offset allows for
+efficient addressing of the TCB and up to 4K-16 of other thread library
+information.
+
+(*) For implementation reasons the actual value stored in dtv may point to
+the start of a block, however values returned by accessor functions will be
+offset by 0x8000.
+
+
+4.1.x  PowerPC64 General Dynamic TLS Model
+------------------------------------------
+
+The PowerPC64 general dynamic access model is similar to that for Alpha.
+The __tls_get_addr function is called with one parameter which is a pointer
+to an object of type tls_index.  One complication is that two different
+assembly language syntaxes are used when referring to the GOT, one more
+compatible with other ELF systems, and one more compatible with PowerOpen
+systems.  Furthermore, different parts of the tool-chain fill in the GOT
+(or TOC) in each mode.  First we describe the ELF form and relocations.
+
+Code sequence		Reloc			Sym
+ addi 3,2,x@got@tlsgd	R_PPC64_GOT_TLSGD16	x
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+
+GOT[n]			R_PPC64_DTPMOD64	x
+GOT[n+1]		R_PPC64_DTPREL64	x
+
+The relocation specifier @got@tlsgd causes the linker to create an object
+of type tls_index in the GOT.  The address of this object is loaded into
+the first argument register with the addi instruction, then a standard
+function call is made.
+
+Now the PowerOpen compatible syntax, as used by PowerPC64 GCC.
+
+Code sequence		Reloc			Sym
+ addi 3,2,.LC0@toc	R_PPC64_TOC16		.LC0
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+..
+ .section .toc,"aw"
+.LC0:
+ .quad x@dtpmod		R_PPC64_DTPMOD64	x
+ .quad x@dtprel		R_PPC64_DTPREL64	x
+
+In this case, the TOC section contents are specified by the compiler;  The
+linker doesn't create GOT entries.  A minor variation on this code is used
+if -mminimal-toc is specified, but since the difference is common with
+other TOC code emitted by gcc it won't be described here.
+
+
+4.2.x  PowerPC64 Local Dynamic TLS Model
+----------------------------------------
+
+This is similar to other architectures.  As for Alpha, three different
+sequences may be used, depending on the size of the offset to the variable.
+First the ELF syntax.
+
+Code sequence		Reloc			Sym
+ addi 3,2,x1@got@tlsld	R_PPC64_GOT_TLSLD16	x1
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+..
+ addi 9,3,x1@dtprel	R_PPC64_DTPREL16	x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC64_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC64_DTPREL16_LO	x2
+..
+ ld 9,x3@got@dtprel(2)	R_PPC64_GOT_DTPREL16_DS	x3
+ add 9,9,3
+
+GOT[n]			R_PPC64_DTPMOD64	x1
+GOT[n+1]		0
+
+GOT[m]			R_PPC64_DTPREL64	x3
+
+@got@tlsld in the first instruction causes the linker to generate a
+tls_index object in the GOT with a fixed 0 offset.  Similarly, @got@dtprel
+causes the linker to generate a GOT entry for the dtv pointer offset.  The
+code shown assumes that x1 is in the first 64k of the thread storage block,
+while x2 isn't but is within the first 2G, and x3 is outside 2G.  If we
+wanted to load the values of x1, x2 and x3 instead of the address, then we
+could access unsigned int variables with
+
+..
+ lwz 0,x1@dtprel(3)	R_PPC64_DTPREL16	x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC64_DTPREL16_HA	x2
+ lwz 0,x2@dtprel@l(9)	R_PPC64_DTPREL16_LO	x2
+..
+ ld 9,x3@got@dtprel(2)	R_PPC64_GOT_DTPREL16_DS	x3
+ lwzx 0,3,9
+
+Now the PowerOpen compatible syntax, as used by PowerPC64 GCC.
+
+Code sequence		Reloc			Sym
+ addi 3,2,.LC0@toc	R_PPC64_TOC16		.LC0
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+..
+ addi 9,3,x1@dtprel	R_PPC64_DTPREL16	x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC64_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC64_DTPREL16_LO	x2
+..
+ ld 9,.LC1@toc(2)	R_PPC64_TOC16_DS	.LC1
+ add 9,9,3
+..
+ .section .toc,"aw"
+.LC0:
+ .quad x1@dtpmod	R_PPC64_DTPMOD64	x1
+ .quad 0
+.LC1:
+ .quad x3@dtprel	R_PPC64_DTPREL64	x3
+
+No surprises here.  As for the general dynamic code, the compiler handles
+generation of the tls_index object in the TOC.
+
+
+4.3.x  PowerPC64 Initial Exec TLS Model
+---------------------------------------
+
+First the ELF version.
+
+Code sequence		Reloc			Sym
+ ld 9,x@got@tprel(2)	R_PPC64_GOT_TPREL16_DS	x
+ add 9,9,x@tls		R_PPC64_TLS		x
+
+GOT[n]			R_PPC64_TPREL64		x
+
+@got@tprel in the first instruction causes the linker to generate a GOT
+entry with a relocation that the dynamic linker will replace with the
+offset for x relative to the thread pointer.  x@tls tells the assembler to
+use an r13 form of the instruction (ie. add 9,9,13 in this case), and tag
+the instruction with a reloc that indicates it belongs to a TLS sequence.
+This may be later used by the linker when optimizing TLS code.
+
+To read the contents of the variable instead of calculating its address,
+the "add 9,9,x@tls" instruction might be replaced with "lwzx 0,9,x@tls".
+
+The PowerOpen compatible version is similar, except that the compiler
+generates a TOC entry rather than the linker generating a GOT entry.
+
+Code sequence		Reloc			Sym
+ ld 9,.LC0@toc(2)	R_PPC64_TOC16_DS	.LC0
+ add 9,9,.LC0@tls	R_PPC64_TLS		.LC0
+..
+ .section .toc,"aw"
+.LC0:
+ .quad x@tprel		R_PPC64_TPREL64		x
+
+
+4.4.x  PowerPC64 Local Exec TLS Model
+-------------------------------------
+
+As for Alpha, three different sequences may be used, depending on the size
+of the offset to the variable.  The first two handle offsets within 60K
+and 2G+28K respectively of the start of the TLS block (remember that r13
+points 28K past the end of the TCB, which is immediately prior to the first
+TLS block).  The last sequence is identical to the Initial Execution TLS
+Model sequence so is not shown here.
+
+Code sequence		Reloc			Sym
+ addi 9,13,x1@tprel	R_PPC64_TPREL16		x1
+..
+ addis 9,13,x2@tprel@ha	R_PPC64_TPREL16_HA	x2
+ addi 9,9,x2@tprel@l	R_PPC64_TPREL16_LO	x2
+
+Since these two code sequences don't use the GOT, the PowerOpen compatible
+syntax is identical.
+
+5.x  PowerPC64 Linker Optimizations
+-----------------------------------
+
+Linker transformations for PowerPC64 are complicated by there being two
+assembler syntaxes.  When using the PowerPC64 ELF flavour syntax, GOT
+generation is under control of the linker, so it is possible to remove and
+replace unused GOT entries.  For instance, the GD -> IE transformation
+results in two entries (a DTPMOD64 and DTPREL64) being replaced with a
+single TPREL64 entry.  The transformation process is considerably more
+difficult for the linker when using the PowerOpen compatible syntax, as the
+linker needs to search TOC section relocs to map from the local sym (.LC0
+and .LC1 in the examples) to the variable.  Currently, no compaction of the
+TOC is done by the linker when transforming PowerOpen compatible code, and
+it is fortunate that if transforming for a given symbol that we transform
+all references for the symbol.  If that were not the case, we might need to
+add to the TOC rather than just modify an entry.
+
+5.x.1  General Dynamic To Initial Exec, ELF syntax
+--------------------------------------------------
+
+Code sequence		Reloc			Sym
+ addi 3,2,x@got@tlsgd	R_PPC64_GOT_TLSGD16	x
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+
+GOT[n]			R_PPC64_DTPMOD64	x
+GOT[n+1]		R_PPC64_DTPREL64	x
+
+is replaced by
+
+ ld 3,x@got@tprel(2)	R_PPC64_GOT_TPREL16_DS	x
+ nop
+ add 3,3,13
+
+GOT[n]			R_PPC64_TPREL64		x
+
+The linker relies on code being emitted exactly as shown.
+
+5.x.2  General Dynamic To Local Exec, ELF syntax
+------------------------------------------------
+
+This transformation is only performed by the linker when the symbol is
+within 2G+28K of the thread pointer.  In other cases, the GD ->IE
+transformation is used as that handles any offset.
+
+Code sequence		Reloc			Sym
+ addi 3,2,x@got@tlsgd	R_PPC64_GOT_TLSGD16	x
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+
+GOT[n]			R_PPC64_DTPMOD64	x
+GOT[n+1]		R_PPC64_DTPREL64	x
+
+is replaced by
+
+ addis 3,13,x@tprel@ha	R_PPC64_TPREL16_HA	x
+ nop
+ addi 3,3,x@tprel@l	R_PPC64_TPREL16_LO	x
+
+The linker relies on code being emitted exactly as shown.
+
+5.x.3  Local Dynamic to Local Exec, ELF syntax
+----------------------------------------------
+
+In this case, the function call is replaced with an equivalent code
+sequence.  As shown, following dtprel sequences are left unchanged.
+
+Code sequence		Reloc			Sym
+ addi 3,2,x1@got@tlsld	R_PPC64_GOT_TLSLD16	x1
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+..
+ addi 9,3,x1@dtprel	R_PPC64_DTPREL16	x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC64_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC64_DTPREL16_LO	x2
+..
+ ld 9,x3@got@dtprel(2)	R_PPC64_GOT_DTPREL16_DS	x3
+ add 9,9,3
+
+GOT[n]			R_PPC64_DTPMOD64	x1
+GOT[n+1]
+
+GOT[m]			R_PPC64_DTPREL64	x3
+
+is replaced by
+
+ addis 3,13,L@tprel@ha	R_PPC64_TPREL16_HA	linker generated local sym
+ nop
+ addi 3,3,L@tprel@l	R_PPC64_TPREL16_LO	linker generated local sym
+..
+ addi 9,3,x1@dtprel	R_PPC64_DTPREL16	x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC64_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC64_DTPREL16_LO	x2
+..
+ ld 9,x3@got@dtprel(2)	R_PPC64_GOT_DTPREL16_DS	x3
+ add 9,9,3
+
+GOT[m]			R_PPC64_DTPREL64	x3
+
+The "linker generated local sym" points to the start of the thread storage
+block plus 0x7000.  In practice, a section symbol with a suitable offset
+will be used.  The linker relies on code for the tls_get_addr call being
+emitted exactly as shown.
+
+5.x.4  Initial Exec To Local Exec, ELF syntax
+---------------------------------------------
+
+This transformation is only performed by the linker when the symbol is
+within 2G+28K of the thread pointer.
+
+Code sequence		Reloc			Sym
+ ld 9,x@got@tprel(2)	R_PPC64_GOT_TPREL16_DS	x
+ add 9,9,x@tls		R_PPC64_TLS		x
+
+GOT[n]			R_PPC64_TPREL64		x
+
+is replaced by
+
+ addis 9,13,x@tprel@ha	R_PPC64_TPREL16_HA	x
+ addi 9,9,x@tprel@l	R_PPC64_TPREL16_LO	x
+
+Other sizes and types of thread-local variables may use any of the X-form
+indexed loads or stores that have corresponding D-form instructions.  The
+"ld" and "add" instruction in this case may have intervening code inserted
+by the compiler.
+
+An example showing access to the contents of a variable:
+
+Code sequence		Reloc			Sym
+ ld 9,x@got@tprel(2)	R_PPC64_GOT_TPREL16_DS	x
+ lbzx 10,9,x@tls	R_PPC64_TLS		x
+ addi 10,10,1
+ stbx 10,9,x@tls	R_PPC64_TLS		x
+
+GOT[n]			R_PPC64_TPREL64		x
+
+is replaced by
+
+ addis 9,13,x@tprel@ha	R_PPC64_TPREL16_HA	x
+ lbz 10,x@tprel@l(9)	R_PPC64_TPREL16_LO	x
+ addi 10,10,1
+ stb 10,x@tprel@l(9)	R_PPC64_TPREL16_LO	x
+
+5.x.5  General Dynamic To Initial Exec, PowerOpen syntax
+--------------------------------------------------------
+
+Code sequence		Reloc			Sym
+ addi 3,2,.LC0@toc	R_PPC64_TOC16		.LC0
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+..
+ .section .toc,"aw"
+.LC0:
+ .quad x@dtpmod		R_PPC64_DTPMOD64	x
+ .quad x@dtprel		R_PPC64_DTPREL64	x
+
+is replaced by
+
+ ld 9,.LC0@toc(2)	R_PPC64_TOC16_DS	.LC0
+ nop
+ add 9,9,13
+..
+ .section .toc,"aw"
+.LC0:
+ .quad x@tprel		R_PPC64_TPREL64		x
+ .quad 0
+
+5.x.6  General Dynamic To Local Exec, PowerOpen syntax
+------------------------------------------------------
+
+As for the ELF syntax, this transformation is only performed by the linker
+when the symbol is within 2G+28K of the thread pointer.  In other cases,
+the GD ->IE transformation is used as that handles any offset.
+
+Code sequence		Reloc			Sym
+ addi 3,2,.LC0@toc	R_PPC64_TOC16		.LC0
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+..
+ .section .toc,"aw"
+.LC0:
+ .quad x@dtpmod		R_PPC64_DTPMOD64	x
+ .quad x@dtprel		R_PPC64_DTPREL64	x
+
+is replaced by
+
+ addis 3,13,x@tprel@ha	R_PPC64_TPREL16_HA	x
+ nop
+ addi 3,3,x@tprel@l	R_PPC64_TPREL16_LO	x
+..
+ .section .toc,"aw"
+.LC0:
+ .quad 1
+ .quad 0
+
+5.x.7  Local Dynamic to Local Exec, PowerOpen syntax
+----------------------------------------------------
+
+As above, the function call is replaced with an equivalent code
+sequence.  Following dtprel sequences are left unchanged.
+
+Code sequence		Reloc			Sym
+ addi 3,2,.LC0@toc	R_PPC64_TOC16		.LC0
+ bl .__tls_get_addr	R_PPC64_REL24		.__tls_get_addr
+ nop
+..
+ addi 9,3,x1@dtprel	R_PPC64_DTPREL16	x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC64_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC64_DTPREL16_LO	x2
+..
+ ld 9,.LC1@toc(2)	R_PPC64_TOC16_DS	.LC1
+ add 9,9,3
+..
+ .section .toc,"aw"
+.LC0:
+ .quad x1@dtpmod	R_PPC64_DTPMOD64	x1
+ .quad 0
+.LC1:
+ .quad x3@dtprel	R_PPC64_DTPREL64	x3
+
+is replaced by
+
+ addis 3,13,L@tprel@ha	R_PPC64_TPREL16_HA	linker generated local sym
+ nop
+ addi 3,3,L@tprel@l	R_PPC64_TPREL16_LO	linker generated local sym
+..
+ addi 9,3,x1@dtprel	R_PPC64_DTPREL16	x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC64_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC64_DTPREL16_LO	x2
+..
+ ld 9,.LC1@toc(2)	R_PPC64_TOC16_DS	.LC1
+ add 9,9,3
+..
+ .section .toc,"aw"
+.LC0:
+ .quad 1
+ .quad 0
+.LC1:
+ .quad x3@dtprel	R_PPC64_DTPREL64	x3
+
+5.x.8  Initial Exec To Local Exec, PowerOpen syntax
+---------------------------------------------------
+
+As for the ELF syntax, this transformation is only performed by the linker
+when the symbol is within 2G+28K of the thread pointer.
+
+Code sequence		Reloc			Sym
+ ld 9,.LC0@toc(2)	R_PPC64_TOC16_DS	.LC0
+ add 9,9,.LC0@tls	R_PPC64_TLS		.LC0
+..
+ .section .toc,"aw"
+.LC0:
+ .quad x@tprel		R_PPC64_TPREL64		x
+
+is replaced by
+
+ addis 9,13,x@tprel@ha	R_PPC64_TPREL16_HA	x
+ addi 9,9,x@tprel@l	R_PPC64_TPREL16_LO	x
+..
+ .section .toc,"aw"
+.LC0:
+ .quad 0
+
+
+6.x  New PowerPC64 ELF Definitions
+----------------------------------
+
+Reloc Name                  Value  Field         Expression
+R_PPC64_TLS                 67     none          (sym+add)@tls
+R_PPC64_DTPMOD64            68     doubleword64  (sym+add)@dtpmod
+R_PPC64_TPREL16             69     half16*       (sym+add)@tprel
+R_PPC64_TPREL16_LO          60     half16        (sym+add)@tprel@l
+R_PPC64_TPREL16_HI          71     half16        (sym+add)@tprel@h
+R_PPC64_TPREL16_HA          72     half16        (sym+add)@tprel@ha
+R_PPC64_TPREL64             73     doubleword64  (sym+add)@tprel
+R_PPC64_DTPREL16            74     half16*       (sym+add)@dtprel
+R_PPC64_DTPREL16_LO         75     half16        (sym+add)@dtprel@l
+R_PPC64_DTPREL16_HI         76     half16        (sym+add)@dtprel@h
+R_PPC64_DTPREL16_HA         77     half16        (sym+add)@dtprel@ha
+R_PPC64_DTPREL64            78     doubleword64  (sym+add)@dtprel
+R_PPC64_GOT_TLSGD16         79     half16*       (sym+add)@got@tlsgd
+R_PPC64_GOT_TLSGD16_LO      80     half16        (sym+add)@got@tlsgd@l
+R_PPC64_GOT_TLSGD16_HI      81     half16        (sym+add)@got@tlsgd@h
+R_PPC64_GOT_TLSGD16_HA      82     half16        (sym+add)@got@tlsgd@ha
+R_PPC64_GOT_TLSLD16         83     half16*       (sym+add)@got@tlsld
+R_PPC64_GOT_TLSLD16_LO      84     half16        (sym+add)@got@tlsld@l
+R_PPC64_GOT_TLSLD16_HI      85     half16        (sym+add)@got@tlsld@h
+R_PPC64_GOT_TLSLD16_HA      86     half16        (sym+add)@got@tlsld@ha
+R_PPC64_GOT_TPREL16_DS      87     half16ds*     (sym+add)@got@tprel
+R_PPC64_GOT_TPREL16_LO_DS   88     half16ds      (sym+add)@got@tprel@l
+R_PPC64_GOT_TPREL16_HI      89     half16        (sym+add)@got@tprel@h
+R_PPC64_GOT_TPREL16_HA      90     half16        (sym+add)@got@tprel@ha
+R_PPC64_GOT_DTPREL16_DS     91     half16ds*     (sym+add)@got@dtprel
+R_PPC64_GOT_DTPREL16_LO_DS  92     half16ds      (sym+add)@got@dtprel@l
+R_PPC64_GOT_DTPREL16_HI     93     half16        (sym+add)@got@dtprel@h
+R_PPC64_GOT_DTPREL16_HA     94     half16        (sym+add)@got@dtprel@ha
+R_PPC64_TPREL16_DS          95     half16ds*     (sym+add)@tprel
+R_PPC64_TPREL16_LO_DS       96     half16ds      (sym+add)@tprel@l
+R_PPC64_TPREL16_HIGHER      97     half16        (sym+add)@tprel@higher
+R_PPC64_TPREL16_HIGHERA     98     half16        (sym+add)@tprel@highera
+R_PPC64_TPREL16_HIGHEST     99     half16        (sym+add)@tprel@highest
+R_PPC64_TPREL16_HIGHESTA   100     half16        (sym+add)@tprel@highesta
+R_PPC64_DTPREL16_DS        101     half16ds*     (sym+add)@dtprel
+R_PPC64_DTPREL16_LO_DS     102     half16ds      (sym+add)@dtprel@l
+R_PPC64_DTPREL16_HIGHER    103     half16        (sym+add)@dtprel@higher
+R_PPC64_DTPREL16_HIGHERA   104     half16        (sym+add)@dtprel@highera
+R_PPC64_DTPREL16_HIGHEST   105     half16        (sym+add)@dtprel@highest
+R_PPC64_DTPREL16_HIGHESTA  106     half16        (sym+add)@dtprel@highesta
+
+(sym+add)@tls
+Merely causes the R_PPC64_TLS marker reloc to be emitted.
+
+(sym+add)@dtpmod
+Computes the load module index of the load module that contains the
+definition of sym.  The addend, if present, is ignored.
+
+(sym+add)@dtprel
+Computes a dtv-relative displacement, the difference between the value
+of sym+add and the base address of the thread-local storage block that
+contains the definition of sym, minus 0x8000.  The minus 0x8000 is because
+dtv elements point to the start of the storage block plus 0x8000.
+
+(sym+add)@tprel
+Computes a tp-relative displacement, the difference between the value of
+sym+add and the value of the thread pointer (r13).
+
+(sym+add)@got@tlsgd
+Allocates two contiguous entries in the GOT to hold a tls_index structure,
+with values (sym+add)@dtpmod and (sym+add)@dtprel, and computes the offset
+to the first entry relative to the TOC base (r2).
+
+(sym+add)@got@tlsld
+Allocates two contiguous entries in the GOT to hold a tls_index structure,
+with values (sym+add)@dtpmod and zero, and computes the offset to the first
+entry relative to the TOC base (r2).
+
+(sym+add)@got@dtprel
+Allocates an entry in the GOT with value (sym+add)@dtprel, and computes the
+offset to the entry relative to the TOC base (r2).
+
+(sym+add)@got@tprel
+Allocates an entry in the GOT with value (sym+add)@tprel, and computes the
+offset to the entry relative to the TOC base (r2).
+
+@l, @h, @higher, @highest
+These modifiers affect the value computed, returning the low 16 bits, the
+next 16 bits, and so on up to the top 16 bits of a 64 bit value.
+
+@ha, @highera, @highesta
+These modifiers are like the corresponding @h, @higher and @highest
+modifiers, except they adjust for @l being treated as a signed number.
+
+Relocations not using these modifiers (those flagged with `*' above) will
+trigger a relocation failure if the value computed does not fit in the
+field specified.
+
+Local variables:
+fill-column: 75
+End:

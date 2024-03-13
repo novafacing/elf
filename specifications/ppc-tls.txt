@@ -1,0 +1,299 @@
+PowerPC Specific Thread Local Storage ABI
+For insertion in https://people.redhat.com/drepper/tls.pdf
+
+
+3.4.x  PowerPC32 Specific
+-------------------------
+
+The PowerPC32 TLS ABI is similar to the PowerPC64 model.  The thread-local
+storage data structures follow variant I.  The TCB is 8 bytes, with the
+first 4 bytes containing the pointer to the dynamic thread vector.
+tlsoffset calculations and definition of __tls_get_addr are identical to
+PowerPC64.  r2 is the thread pointer, and points 0x7000 past the end of the
+thread control block.  Dynamic thread vector pointers point 0x8000 past the
+start of each TLS block.  (*)  This allows the first 64K of each block to
+be addressed from a dtv pointer using fewer machine instructions.  The tp
+offset allows for efficient addressing of the TCB and up to 4K-8 of other
+thread library information.
+
+(*) For implementation reasons the actual value stored in dtv may point to
+the start of a block, however values returned by accessor functions will be
+offset by 0x8000.
+
+
+4.1.x  PowerPC32 General Dynamic TLS Model
+------------------------------------------
+
+The PowerPC32 general dynamic access model is similar to that for PowerPC64. 
+The __tls_get_addr function is called with one parameter which is a pointer
+to an object of type tls_index.  In the following code it is assumed that
+register r31 points to the GOT.  Different registers may well be used.
+
+Code sequence		Reloc			Sym
+ addi 3,31,x@got@tlsgd	R_PPC_GOT_TLSGD16	x
+ bl __tls_get_addr	R_PPC_REL24		__tls_get_addr
+
+GOT[n]			R_PPC_DTPMOD32		x
+GOT[n+1]		R_PPC_DTPREL32		x
+
+The relocation specifier @got@tlsgd causes the linker to create an object
+of type tls_index in the GOT.  The address of this object is loaded into
+the first argument register with the addi instruction, then a standard
+function call is made.
+
+
+4.2.x  PowerPC32 Local Dynamic TLS Model
+----------------------------------------
+
+This is similar to other architectures.  Two different sequences may be
+used, depending on the size of the offset to the variable.
+
+Code sequence		Reloc			Sym
+ addi 3,31,x1@got@tlsld	R_PPC_GOT_TLSLD16	x1
+ bl __tls_get_addr	R_PPC_REL24		__tls_get_addr
+..
+ addi 9,3,x1@dtprel	R_PPC_DTPREL16		x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC_DTPREL16_LO	x2
+
+GOT[n]			R_PPC_DTPMOD32		x1
+GOT[n+1]		0
+
+@got@tlsld in the first instruction causes the linker to generate a
+tls_index object in the GOT with a fixed 0 offset.  The code shown assumes
+that x1 is in the first 64k of the thread storage block, while x2 isn't.
+If we wanted to load the values of x1 and x2 instead of the address, then
+we could access int variables with
+
+..
+ lwz 0,x1@dtprel(3)	R_PPC_DTPREL16		x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC_DTPREL16_HA	x2
+ lwz 0,x2@dtprel@l(9)	R_PPC_DTPREL16_LO	x2
+
+
+4.3.x  PowerPC32 Initial Exec TLS Model
+---------------------------------------
+
+Code sequence		Reloc			Sym
+ lwz 9,x@got@tprel(31)	R_PPC_GOT_TPREL16	x
+ add 9,9,x@tls		R_PPC_TLS		x
+
+GOT[n]			R_PPC_TPREL32		x
+
+@got@tprel in the first instruction causes the linker to generate a GOT
+entry with a relocation that the dynamic linker will replace with the
+offset for x relative to the thread pointer.  x@tls tells the assembler to
+use an r2 form of the instruction (ie. add 9,9,2 in this case), and tag the
+instruction with a reloc that indicates it belongs to a TLS sequence.  This
+may be later used by the linker when optimizing TLS code.
+
+To read the contents of the variable instead of calculating its address,
+the "add 9,9,x@tls" instruction might be replaced with "lwzx 0,9,x@tls".
+
+
+4.4.x  PowerPC32 Local Exec TLS Model
+-------------------------------------
+
+Two different sequences may be used, depending on the size of the offset to
+the variable.  The first one handles offsets within 60K of the end of the
+TLS block (remember that r2 points 28K past the end of the TCB, which is
+immediately prior to the first TLS block).
+
+Code sequence		Reloc			Sym
+ addi 9,2,x1@tprel	R_PPC_TPREL16		x1
+..
+ addis 9,2,x2@tprel@ha	R_PPC_TPREL16_HA	x2
+ addi 9,9,x2@tprel@l	R_PPC_TPREL16_LO	x2
+
+
+5.x  PowerPC32 Linker Optimizations
+-----------------------------------
+
+The linker transformations for PowerPC32 are quite straightforward, since
+all the relevant code sequences are two instructions long.
+
+5.x.1  General Dynamic To Initial Exec
+--------------------------------------
+
+Code sequence		Reloc			Sym
+ addi 3,31,x@got@tlsgd	R_PPC_GOT_TLSGD16	x
+ bl __tls_get_addr	R_PPC_REL24		__tls_get_addr
+
+GOT[n]			R_PPC_DTPMOD32		x
+GOT[n+1]		R_PPC_DTPREL32		x
+
+is replaced by
+
+ lwz 3,x@got@tprel(31)	R_PPC_GOT_TPREL16	x
+ add 3,3,2
+
+GOT[n]			R_PPC_TPREL32		x
+
+The linker relies on this sequence being emitted without intervening
+instructions.  A register other than r31 may be used as the GOT pointer.
+
+5.x.2  General Dynamic To Local Exec
+------------------------------------
+
+Code sequence		Reloc			Sym
+ addi 3,31,x@got@tlsgd	R_PPC_GOT_TLSGD16	x
+ bl __tls_get_addr	R_PPC_REL24		__tls_get_addr
+
+GOT[n]			R_PPC_DTPMOD32		x
+GOT[n+1]		R_PPC_DTPREL32		x
+
+is replaced by
+
+ addis 3,2,x@tprel@ha	R_PPC_TPREL16_HA	x
+ addi 3,3,x@tprel@l	R_PPC_TPREL16_LO	x
+
+The linker relies on this sequence being emitted without intervening
+instructions.  A register other than r31 may be used as the GOT pointer.
+
+5.x.3  Local Dynamic to Local Exec
+----------------------------------
+
+In this case, the function call is replaced with an equivalent code
+sequence.  As shown, following dtprel sequences are left unchanged.
+
+Code sequence		Reloc			Sym
+ addi 3,31,x1@got@tlsld	R_PPC_GOT_TLSLD16	x1
+ bl __tls_get_addr	R_PPC_REL24		__tls_get_addr
+..
+ addi 9,3,x1@dtprel	R_PPC_DTPREL16		x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC_DTPREL16_LO	x2
+
+GOT[n]			R_PPC_DTPMOD32		x1
+GOT[n+1]
+
+is replaced by
+
+ addis 3,2,L@tprel@ha	R_PPC_TPREL16_HA	linker generated local sym
+ addi 3,3,L@tprel@l	R_PPC_TPREL16_LO	linker generated local sym
+..
+ addi 9,3,x1@dtprel	R_PPC_DTPREL16		x1
+..
+ addis 9,3,x2@dtprel@ha	R_PPC_DTPREL16_HA	x2
+ addi 9,9,x2@dtprel@l	R_PPC_DTPREL16_LO	x2
+
+The "linker generated local sym" points to the start of the thread storage
+block plus 0x7000.  In practice, a section symbol with a suitable offset
+will be used.  The linker relies on code for the tls_get_addr call being
+emitted without intervening instructions.  A register other than r31 may
+be used as the GOT pointer.
+
+5.x.4  Initial Exec To Local Exec
+---------------------------------
+
+Code sequence		Reloc			Sym
+ lwz 9,x@got@tprel(31)	R_PPC_GOT_TPREL16	x
+ add 9,9,x@tls		R_PPC64_TLS		x
+
+GOT[n]			R_PPC_TPREL32		x
+
+is replaced by
+
+ addis 9,2,x@tprel@ha	R_PPC_TPREL16_HA	x
+ addi 9,9,x@tprel@l	R_PPC_TPREL16_LO	x
+
+Other sizes and types of thread-local variables may use any of the X-FORM
+indexed loads or stores.  The "lwz" and "add" instruction in this case may
+have intervening code inserted by the compiler.
+
+An example showing access to the contents of a variable:
+
+Code sequence		Reloc			Sym
+ lwz 9,x@got@tprel(31)	R_PPC_GOT_TPREL16	x
+ lbzx 10,9,x@tls	R_PPC_TLS		x
+ addi 10,10,1
+ stbx 10,9,x@tls	R_PPC_TLS		x
+
+GOT[n]			R_PPC_TPREL32		x
+
+is replaced by
+
+ addis 9,2,x@tprel@ha	R_PPC_TPREL16_HA	x
+ lbz 10,x@tprel@l(9)	R_PPC_TPREL16_LO	x
+ addi 10,10,1
+ stb 10,x@tprel@l(9)	R_PPC_TPREL16_LO	x
+
+
+6.x  New PowerPC32 ELF Definitions
+----------------------------------
+
+Reloc Name                  Value  Field         Expression
+R_PPC_TLS                   67     none          (sym+add)@tls
+R_PPC_DTPMOD32              68 	   word32        (sym+add)@dtpmod
+R_PPC_TPREL16               69 	   half16*       (sym+add)@tprel
+R_PPC_TPREL16_LO            60 	   half16        (sym+add)@tprel@l
+R_PPC_TPREL16_HI            71 	   half16        (sym+add)@tprel@h
+R_PPC_TPREL16_HA            72 	   half16        (sym+add)@tprel@ha
+R_PPC_TPREL32               73 	   word32        (sym+add)@tprel
+R_PPC_DTPREL16              74 	   half16*       (sym+add)@dtprel
+R_PPC_DTPREL16_LO           75 	   half16        (sym+add)@dtprel@l
+R_PPC_DTPREL16_HI           76 	   half16        (sym+add)@dtprel@h
+R_PPC_DTPREL16_HA           77 	   half16        (sym+add)@dtprel@ha
+R_PPC_DTPREL32              78 	   word32        (sym+add)@dtprel
+R_PPC_GOT_TLSGD16           79 	   half16*       (sym+add)@got@tlsgd
+R_PPC_GOT_TLSGD16_LO        80 	   half16        (sym+add)@got@tlsgd@l
+R_PPC_GOT_TLSGD16_HI        81 	   half16        (sym+add)@got@tlsgd@h
+R_PPC_GOT_TLSGD16_HA        82 	   half16        (sym+add)@got@tlsgd@ha
+R_PPC_GOT_TLSLD16           83 	   half16*       (sym+add)@got@tlsld
+R_PPC_GOT_TLSLD16_LO        84 	   half16        (sym+add)@got@tlsld@l
+R_PPC_GOT_TLSLD16_HI        85 	   half16        (sym+add)@got@tlsld@h
+R_PPC_GOT_TLSLD16_HA        86 	   half16        (sym+add)@got@tlsld@ha
+R_PPC_GOT_TPREL16           87 	   half16*       (sym+add)@got@tprel
+R_PPC_GOT_TPREL16_LO        88 	   half16        (sym+add)@got@tprel@l
+R_PPC_GOT_TPREL16_HI        89 	   half16        (sym+add)@got@tprel@h
+R_PPC_GOT_TPREL16_HA        90 	   half16        (sym+add)@got@tprel@ha
+
+(sym+add)@tls
+Merely causes the R_PPC_TLS marker reloc to be emitted.
+
+(sym+add)@dtpmod
+Computes the load module index of the load module that contains the
+definition of sym.  The addend, if present, is ignored.
+
+(sym+add)@dtprel
+Computes a dtv-relative displacement, the difference between the value
+of sym+add and the base address of the thread-local storage block that
+contains the definition of sym, minus 0x8000.  The minus 0x8000 is because
+dtv elements point to the start of the storage block plus 0x8000.
+
+(sym+add)@tprel
+Computes a tp-relative displacement, the difference between the value of
+sym+add and the value of the thread pointer (r2).
+
+(sym+add)@got@tlsgd
+Allocates two contiguous entries in the GOT to hold a tls_index structure,
+with values (sym+add)@dtpmod and (sym+add)@dtprel, and computes the offset
+of the first entry within the GOT.
+
+(sym+add)@got@tlsld
+Allocates two contiguous entries in the GOT to hold a tls_index structure,
+with values (sym+add)@dtpmod and zero, and computes the offset of the first
+entry within the GOT.
+
+(sym+add)@got@tprel
+Allocates an entry in the GOT with value (sym+add)@tprel, and computes the
+offset of the entry within the GOT.
+
+@l, @h
+These modifiers affect the value computed, returning the low 16 bits or the
+high 16 bits of a 32 bit value.
+
+@ha
+This modifier is like the corresponding @h modifier, except it adjusts for
+@l being treated as a signed number.
+
+Relocations not using these modifiers (those flagged with `*' above) will
+trigger a relocation failure if the value computed does not fit in the
+field specified.
+
+Local variables:
+fill-column: 75
+End:

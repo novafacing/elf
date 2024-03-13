@@ -17,29 +17,38 @@ wget -q -r -np https://www.sco.com/developers/gabi/latest/contents.html && \
     popd && \
     rm -rf gabi
 
+# Elf 64
+curl -L -o "${SCRIPT_DIR}/elf64.pdf" https://uclibc.org/docs/elf-64-gen.pdf
+
+# ELF
+curl -L -o "${SCRIPT_DIR}/elf.pdf" https://uclibc.org/docs/elf.pdf
+
 # ARM
 gh release download -D "${SCRIPT_DIR}" --repo ARM-software/abi-aa --pattern '*elf*.pdf' --clobber
 
+# ARM FDPIC
+curl -L -o "${SCRIPT_DIR}/fdpic.txt" https://raw.githubusercontent.com/mickael-guene/fdpic_doc/master/abi.txt
+
 # M68K
-curl -L -o "${SCRIPT_DIR}/m68k-abi.pdf" https://uclibc.org/docs/psABI-m68k.pdf
+curl -L -o "${SCRIPT_DIR}/m68k-abi.pdf" https://uclibc.org/docs/psABI-m8-16.pdf
 
 # MIPS
 curl -L -o "${SCRIPT_DIR}/mips.pdf" https://uclibc.org/docs/psABI-mips.pdf
 
 # PA-RISC
-curl -L -o "${SCRIPT_DIR}/pa-risc-abi.pdf" https://uclibc.org/docs/psABI-pa-risc.pdf
+curl -L -o "${SCRIPT_DIR}/parisc-abi.pdf" https://uclibc.org/docs/psABI-parisc.pdf
 
 # PowerPC
 curl -L -o "${SCRIPT_DIR}/ppc-abi.pdf" https://uclibc.org/docs/psABI-ppc.pdf
 
 # PowerPC-TLS
-curl -L -o "${SCRIPT_DIR}/ppc-tls.pdf" https://uclibc.org/docs/tls-ppc.pdf
+curl -L -o "${SCRIPT_DIR}/ppc-tls.txt" https://uclibc.org/docs/tls-ppc.txt
 
 # PowerPC64
 curl -L -o "${SCRIPT_DIR}/ppc64-abi.pdf" https://uclibc.org/docs/psABI-ppc64.pdf
 
 # PowerPC64-TLS
-curl -L -o "${SCRIPT_DIR}/ppc64-tls.pdf" https://uclibc.org/docs/tls-ppc64.pdf
+curl -L -o "${SCRIPT_DIR}/ppc64-tls.txt" https://uclibc.org/docs/tls-ppc64.txt
 
 # S390
 curl -L -o "${SCRIPT_DIR}/s390-abi.pdf" https://uclibc.org/docs/psABI-s390.pdf
@@ -48,7 +57,7 @@ curl -L -o "${SCRIPT_DIR}/s390-abi.pdf" https://uclibc.org/docs/psABI-s390.pdf
 curl -L -o "${SCRIPT_DIR}/s390x-abi.pdf" https://uclibc.org/docs/psABI-s390x.pdf
 
 # SH
-curl -L -o "${SCRIPT_DIR}/sh-abi.pdf" https://uclibc.org/docs/psABI-sh.txt
+curl -L -o "${SCRIPT_DIR}/sh-abi.txt" https://uclibc.org/docs/psABI-sh.txt
 
 # SPARC
 curl -L -o "${SCRIPT_DIR}/sparc-abi.pdf" https://uclibc.org/docs/psABI-sparc.pdf
@@ -68,5 +77,7 @@ fi
 
 pushd "${WORKDIR}/i386-ABI" && \
     make pdf && \
-    cp abi.pdf "${SCRIPT_DIR}/i386-abi" && \
+    cp abi.pdf "${SCRIPT_DIR}/i386-abi.pdf" && \
     popd
+
+popd || exit 1

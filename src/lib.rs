@@ -1,11 +1,29 @@
+//! Definitions for ELF files. Resources include:
+//!
+//! GLIBC ELF Definitions:
+//! - [elf.h](https://github.com/bminor/glibc/blob/master/elf/elf.h)
+//!
+//! The latest System V ABI Drafts & Specifications:
+//! - [System V Application Binary Interface](https://www.sco.com/developers/gabi/latest/contents.html)
+//! - [x86-64 ABI](https://gitlab.com/x86-psABIs/x86-64-ABI)
+//! - [x86 ABI](https://gitlab.com/x86-psABIs/i386-ABI)
+//! - [ARM & AARCH64](https://github.com/ARM-software/abi-aa/releases)
+//! - [RISCV](https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases)
+//!
+//!
+//! Supported Architectures:
+//! - ARM
+//! - AARCH64
+//! - x86
+//! - x86_64
+//! - RISCV
 use std::{
     fmt::Display,
     io::{Read, Seek},
-    ops::BitOr,
 };
 use typed_builder::TypedBuilder;
 
-#[derive(TypedBuilder, Clone, Debug)]
+#[derive(TypedBuilder, Debug)]
 /// The context in which an ELF file is being handled
 pub struct Context {
     #[builder(default)]
@@ -328,41 +346,100 @@ where
 #[repr(u8)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum X86ElfHeaderIdentificationOSABI {}
-
-#[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 /// The file's OS/ABI
 /// (i.e. the operating system and/or ABI for which the file is intended)
+///
+/// This value
 pub enum ElfHeaderIdentificationOSABI {
-    None = 0,
+    /// Unix System V ABI or None, parsing None for this identification field is *not* an
+    /// error.
+    NoneSystemV = 0,
+    /// HP-UX
     HPUX = 1,
+    /// NetBSD
     NetBSD = 2,
+    /// Object uses GNU ELF extensions.
     GnuLinux = 3,
+    /// SUN Solaris
     Solaris = 6,
+    /// IBM AIX
     AIX = 7,
+    /// SGI Irix
     IRIX = 8,
+    /// FreeBSD
     FreeBSD = 9,
+    /// Compaq TRU64 UNIX
     Tru64 = 10,
+    /// Novell Modesto
     NovellModesto = 11,
+    /// OpenBSD
     OpenBSD = 12,
+    /// Open Virtual Memory System
     OpenVMS = 13,
+    /// NSK Non-Stop Kernel
     NonStopKernel = 14,
+    /// Amiga Research OS
     AROS = 15,
+    /// FenixOS Highly scalable multi-core OS
     FenixOS = 16,
+    /// Nuxi CloudABI
     CloudABI = 17,
+    /// Stratus Technologies OpenVOS
     OpenVOS = 18,
-    X86(X86ElfHeaderIdentificationOSABI),
+    /// ARM EABI (the object file contains symbol versioning extensions as described
+    /// in the aaelf32 documentation)
+    ArmExtendedApplicationBinaryInterface = 64,
+    /// FDPIC ELF for either XTensa or ARM, depending on the detected machine. For ARM, this
+    /// is described in the fdpic document.
+    ArmXTensaFunctionDescriptorPositionIndependentCode = 65,
+    /// ARM (non-EABI)
+    Arm = 97,
+    /// Standalone system
+    Standalone = 255,
 }
 
-impl BitOr for ElfHeaderIdentificationOSABI {
-    type Output = Result<Self, Error>;
+impl<R> FromReader<R> for ElfHeaderIdentificationOSABI
+where
+    R: Read + Seek,
+{
+    type Error = Error;
 
-    fn bitor(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (ElfHeaderIdentificationOSABI::X86(lhs), ElfHeaderIdentificationOSABI::X86(rhs)) => {
-                Ok(Self::X86(lhs as u8 | rhs as u8))
+    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
+        let offset = reader.stream_position()?;
+        let mut osabi = [0];
+        reader.read_exact(&mut osabi)?;
+
+        match osabi[0] {
+            0 => Ok(Self::NoneSystemV),
+            1 => Ok(Self::HPUX),
+            2 => Ok(Self::NetBSD),
+            3 => Ok(Self::GnuLinux),
+            6 => Ok(Self::Solaris),
+            7 => Ok(Self::AIX),
+            8 => Ok(Self::IRIX),
+            9 => Ok(Self::FreeBSD),
+            10 => Ok(Self::Tru64),
+            11 => Ok(Self::NovellModesto),
+            12 => Ok(Self::OpenBSD),
+            13 => Ok(Self::OpenVMS),
+            14 => Ok(Self::NonStopKernel),
+            15 => Ok(Self::AROS),
+            16 => Ok(Self::FenixOS),
+            17 => Ok(Self::CloudABI),
+            18 => Ok(Self::OpenVOS),
+            64 => Ok(Self::ArmExtendedApplicationBinaryInterface),
+            65 => Ok(Self::ArmXTensaFunctionDescriptorPositionIndependentCode),
+            97 => Ok(Self::Arm),
+            255 => Ok(Self::Standalone),
+            _ => {
+                let error = Error::InvalidOsAbi {
+                    context: ErrorContext::from_reader(reader, offset, osabi.len())?,
+                };
+
+                context
+                    .should_ignore(&error)
+                    .then(|| Ok(Self::NoneSystemV))
+                    .unwrap_or(Err(error))
             }
         }
     }
