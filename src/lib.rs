@@ -1,16 +1,7 @@
-//! Definitions for ELF files. Resources include:
-//!
-//! GLIBC ELF Definitions:
-//! - [elf.h](https://github.com/bminor/glibc/blob/master/elf/elf.h)
-//!
-//! The latest System V ABI Drafts & Specifications:
-//! - [System V Application Binary Interface](https://www.sco.com/developers/gabi/latest/contents.html)
-//! - [x86-64 ABI](https://gitlab.com/x86-psABIs/x86-64-ABI)
-//! - [x86 ABI](https://gitlab.com/x86-psABIs/i386-ABI)
-//! - [ARM & AARCH64](https://github.com/ARM-software/abi-aa/releases)
-//! - [RISCV](https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases)
-//!
-use bitflags::bitflags;
+//! Definitions for ELF Files
+
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
+
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, Saturating as _, SaturatingSub as _, ToPrimitive as _};
 use std::{
@@ -54,6 +45,7 @@ impl Context {
         self.ignore_all || self.ignore.iter().map(|e| matches!(error, e)).any(|b| b)
     }
 
+    /// Read an unsigned char from a reader
     pub fn read_uchar<R>(&mut self, reader: &mut R) -> Result<u8, Error>
     where
         R: Read + Seek,
@@ -61,6 +53,8 @@ impl Context {
         u8::from_reader_with(reader, self)
     }
 
+    /// Read a half-word from a reader, where the size of the half-word read is
+    /// determined by the read context
     pub fn read_half_word<R>(&mut self, reader: &mut R) -> Result<u16, Error>
     where
         R: Read + Seek,
@@ -79,6 +73,8 @@ impl Context {
         }
     }
 
+    /// Read a word from a reader, where the size of the word read is determined by the
+    /// read context
     pub fn read_word<R>(&mut self, reader: &mut R) -> Result<u32, Error>
     where
         R: Read + Seek,
@@ -93,6 +89,8 @@ impl Context {
         }
     }
 
+    /// Read a signed word from a reader, where the size of the word read is determined by
+    /// the read context
     pub fn read_signed_word<R>(&mut self, reader: &mut R) -> Result<i32, Error>
     where
         R: Read + Seek,
@@ -111,6 +109,8 @@ impl Context {
         }
     }
 
+    /// Read an extended word from a reader, where the size of the extended word read is
+    /// determined by the read context
     pub fn read_extended_word<R>(&mut self, reader: &mut R) -> Result<u64, Error>
     where
         R: Read + Seek,
@@ -129,6 +129,8 @@ impl Context {
         }
     }
 
+    /// Read a signed extended word from a reader, where the size of the extended word read
+    /// is determined by the read context
     pub fn read_signed_extended_word<R>(&mut self, reader: &mut R) -> Result<i64, Error>
     where
         R: Read + Seek,
@@ -147,6 +149,8 @@ impl Context {
         }
     }
 
+    /// Read an address from a reader, where the size of the address read is determined by
+    /// the read context
     pub fn read_address<R>(&mut self, reader: &mut R) -> Result<u64, Error>
     where
         R: Read + Seek,
@@ -165,6 +169,8 @@ impl Context {
         }
     }
 
+    /// Read an offset from a reader, where the size of the offset read is determined by the
+    /// read context
     pub fn read_offset<R>(&mut self, reader: &mut R) -> Result<u64, Error>
     where
         R: Read + Seek,
@@ -181,6 +187,8 @@ impl Context {
         }
     }
 
+    /// Read a section from a reader, where the size of the section read is determined by the
+    /// read context
     pub fn read_section<R>(&mut self, reader: &mut R) -> Result<u16, Error>
     where
         R: Read + Seek,
@@ -199,6 +207,8 @@ impl Context {
         }
     }
 
+    /// Read a version symbol from a reader, where the size of the version symbol read is
+    /// determined by the read context
     pub fn read_version_symbol<R>(&mut self, reader: &mut R) -> Result<u16, Error>
     where
         R: Read + Seek,
@@ -222,6 +232,7 @@ impl Context {
 /// An error in ELF handling
 pub enum Error {
     #[error(transparent)]
+    /// A wrapped IO error
     IoError(#[from] std::io::Error),
     #[error("Invalid magic {context} for ELF file. Expected {expected}.")]
     /// An invalid magic number was found in the ELF file
@@ -357,6 +368,9 @@ impl Display for ErrorContext {
 }
 
 impl ErrorContext {
+    /// Read an error context from a reader. Rewinds the reader to the original position
+    /// `offset` then reads the given size of bytes from the reader. This should generally
+    /// be used to "re-read" an erroneous value for reporting.
     pub fn from_reader<R>(reader: &mut R, offset: u64, size: usize) -> Result<Self, Error>
     where
         R: Read + Seek,
@@ -434,8 +448,10 @@ impl_from_reader!(u8, u16, u32, u64, i8, i16, i32, i64);
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The magic number that identifies an ELF file
+/// A file's first 4 bytes hold a "magic number", identifying the file as an ELF object
+/// file.
 pub struct ElfHeaderIdentificationMagic {
+    /// The magic value which identifies an ELF file
     pub magic: [u8; 4],
 }
 
@@ -446,6 +462,7 @@ impl Default for ElfHeaderIdentificationMagic {
 }
 
 impl ElfHeaderIdentificationMagic {
+    /// The magic value which identifies an ELF file
     pub const MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 }
 
@@ -528,8 +545,10 @@ where
 #[repr(u8)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
-/// The data encoding of the file's data structures and types
-/// (i.e. the byte order of the file's data)
+/// The encoding of both the data structures used by object ﬁle container and data
+/// contained in object file sections. This encoding is used for all data structures
+/// in the object file, including the header, section header table, program header table,
+/// and sections, except for the identification field of the ELF header.
 pub enum ElfHeaderIdentificationDataEncoding {
     /// An invalid data encoding
     None = 0,
@@ -574,7 +593,7 @@ where
 #[repr(u8)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
-/// The file's version
+/// Specifies the ELF header version number.
 pub enum ElfHeaderIdentificationVersion {
     /// An invalid version
     None = 0,
@@ -611,10 +630,15 @@ where
 #[repr(u8)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
-/// The file's OS/ABI
-/// (i.e. the operating system and/or ABI for which the file is intended)
-///
-/// This value
+/// Identifies the OS- or ABI-specific ELF extensions used by this file. Some fields in
+/// other ELF structures have ﬂags and values that have operating system and/or ABI
+/// specific meanings; the interpretation of those fields is determined by the value of
+/// this byte. If the object file does not use any extensions, it is recommended that
+/// this byte be set to 0. If the value for this byte is 64 through 255, its meaning
+/// depends on the value of the e_machine header member. The ABI processor supplement
+/// for an architecture can define its own associated set of values for this byte in this
+/// range. If the processor supplement does not specify a set of values, one of the
+/// following values shall be used, where 0 can also be taken to mean unspecified.
 pub enum ElfHeaderIdentificationOSABI {
     /// Unix System V ABI or None, parsing None for this identification field is *not* an
     /// error.
@@ -692,13 +716,31 @@ where
 
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Marks the file as an object file and provide machine- independent data with which to
+/// decode and interpret the file's contents
 pub struct ElfHeaderIdentification {
+    /// See [ElfHeaderIdentificationMagic]
     pub magic: ElfHeaderIdentificationMagic,
+    /// See [ElfHeaderIdentificationClass]
     pub class: ElfHeaderIdentificationClass,
+    /// See [ElfHeaderIdentificationDataEncoding]
     pub data_encoding: ElfHeaderIdentificationDataEncoding,
+    /// See [ElfHeaderIdentificationVersion]
     pub version: ElfHeaderIdentificationVersion,
+    /// See [ElfHeaderIdentificationOSABI]
     pub os_abi: ElfHeaderIdentificationOSABI,
+    /// Identifies the version of the ABI to which the object is targeted. This field is
+    /// used to distinguish among incompatible versions of an ABI. The interpretation of
+    /// this version number is dependent on the ABI identified by the EI_OSABI field. If
+    /// no values are specified for the EI_OSABI field by the processor supplement or no
+    /// version values are specified for the ABI determined by a particular value of the
+    /// EI_OSABI byte, the value 0 shall be used for the EI_ABIVERSION byte; it
+    /// indicates unspecified.
     pub abi_version: u8,
+    /// This value marks the beginning of the unused bytes in e_ident. These bytes are
+    /// reserved and set to zero; programs that read object files should ignore them.
+    /// The value of EI_PAD will change in the future if currently unused bytes are
+    /// given meanings.
     pub padding: [u8; 7],
 }
 
@@ -731,6 +773,7 @@ where
 #[repr(u16)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
+/// Identifies the object file type
 pub enum ElfHeaderType {
     /// No file type
     None = 0,
@@ -1197,6 +1240,7 @@ where
 #[repr(u32)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
+/// Identifies the object file version
 pub enum ElfHeaderVersion {
     /// Invalid version
     None = 0,
@@ -1391,6 +1435,11 @@ where
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// The number of entries in the section header table
+///
+/// If the number of sections is greater than or equal to SHN_LORESERVE (0xﬀ00), e_shnum
+/// has the value SHN_UNDEF (0) and the actual number of section header table entries is
+/// contained in the sh_size field of the section header at index 0 (otherwise, the
+/// sh_size member of the initial entry contains 0).
 pub struct ElfHeaderSectionHeaderEntryNumber {
     number: u16,
 }
@@ -1428,21 +1477,39 @@ where
 
 #[repr(C)]
 #[derive(Debug, PartialEq, Eq, Hash)]
+/// The ELF header, which is located at the beginning of the file, is always present in
+/// any ELF file, and is the only header which must reside at a specific location.
 pub struct ElfHeader {
+    /// See [ElfHeaderIdentification]
     pub identification: ElfHeaderIdentification,
+    /// See [ElfHeaderType]
     pub r#type: ElfHeaderType,
+    /// See [ElfHeaderMachine]
     pub machine: ElfHeaderMachine,
+    /// See [ElfHeaderVersion]
     pub version: ElfHeaderVersion,
+    /// See [ElfHeaderEntry]
     pub entry: ElfHeaderEntry,
+    /// See [ElfHeaderProgramHeaderOffset]
     pub program_header_offset: ElfHeaderProgramHeaderOffset,
+    /// See [ElfHeaderSectionHeaderOffset]
     pub section_header_offset: ElfHeaderSectionHeaderOffset,
+    /// See [ElfHeaderFlags]
     pub flags: ElfHeaderFlags,
+    /// See [ElfHeaderSize]
     pub size: ElfHeaderSize,
+    /// See [ElfHeaderProgramHeaderEntrySize]
     pub program_header_entry_size: ElfHeaderProgramHeaderEntrySize,
+    /// See [ElfHeaderProgramHeaderEntryNumber]
     pub program_header_entry_number: ElfHeaderProgramHeaderEntryNumber,
+    /// See [ElfHeaderSectionHeaderEntrySize]
     pub section_header_entry_size: ElfHeaderSectionHeaderEntrySize,
+    /// See [ElfHeaderSectionHeaderEntryNumber]
     pub section_header_entry_number: ElfHeaderSectionHeaderEntryNumber,
+    /// See [ElfHeaderSectionHeaderStringTableIndex]
     pub section_header_string_table_index: ElfHeaderSectionHeaderStringTableIndex,
+    /// Extra data that is part of the ELF header but does not have a
+    /// specification-defined structure.
     pub data: Vec<u8>,
 }
 
@@ -1621,29 +1688,51 @@ where
     }
 }
 
+#[repr(u64)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
+#[non_exhaustive]
+/// Specially reserved section header numbers
+pub enum ElfSectionHeaderNumber {
+    /// This value marks an undeﬁned, missing, irrelevant, or otherwise
+    /// meaningless section reference. For example, a symbol ``deﬁned''
+    /// relative to section number SHN_UNDEF is an undeﬁned symbol.
+    ///
+    /// Although index 0 is reserved as the undefined value, the section header
+    /// table contains an entry for index 0. If the e_shnum member of the ELF
+    /// header says a file has 6 entries in the section header table, they have the
+    /// indexes 0 through 5. The contents of the initial entry are specified later in
+    /// this section
+    Undefined = 0,
+    /// This value specifies the lower bound of the range of reserved indexes
+    /// for both section header indices in general and for processor-specific
+    /// semantics.
+    LowerReservedProcessorSpecific = 0xff00,
+    /// This value specifies the upper bound of the range of reserved indexes
+    /// for processor-specific semantics.
+    HigherReservedProcessorSpecific = 0xff1f,
+    /// This value specifies the lower bound of the range of reserved indexes
+    /// for operating system-specific semantics.
+    LowerOperatingSystemSpecific = 0xff20,
+    /// This value specifies the upper bound of the range of reserved indexes
+    /// for operating system-specific semantics.
+    HigherOperatingSystemSpecific = 0xff3f,
+    /// This value specifies absolute values for the corresponding reference.  For
+    /// example, symbols defined relative to section number SHN_ABS have absolute values
+    /// and are not aﬀected by relocation.
+    AbsoluteValue = 0xfff1,
+    /// Symbols defined relative to this section are common symbols, such as FORTRAN
+    /// COMMON or unallocated C external variables.
+    CommonSymbols = 0xfff2,
+    /// This value is an escape value. It indicates that the actual section header index
+    /// is too large to fit in the containing field and is to be found in another location
+    /// (specific to the structure where it appears).
+    XIndex = 0xffff,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The section's flags
+/// The section's flags which describe various attributes
 pub struct ElfSectionHeaderFlags(u32);
-
-bitflags! {
-    impl ElfSectionHeaderFlags: u32 {
-        const WRITE = 0x1;
-        const ALLOC = 0x2;
-        const EXECINSTR = 0x4;
-        const MERGE = 0x10;
-        const STRINGS = 0x20;
-        const INFO_LINK = 0x40;
-        const LINK_ORDER = 0x80;
-        const OS_NONCONFORMING = 0x100;
-        const GROUP = 0x200;
-        const TLS = 0x400;
-        const COMPRESSED = 0x800;
-        const MASKOS = 0x0ff00000;
-        const MASKPROC = 0xf0000000;
-
-    }
-}
 
 impl<R> FromReader<R> for ElfSectionHeaderFlags
 where
@@ -1663,6 +1752,50 @@ where
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// The address of the section in memory, if it is to appear in the memory image of a process.
+/// Otherwise, the value is 0.
+pub struct ElfSectionHeaderAddress {
+    address: u64,
+}
+
+impl<R> FromReader<R> for ElfSectionHeaderAddress
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
+        let _offset = reader.stream_position()?;
+
+        context.read_offset(reader).map(|address| Self { address })
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// The byte offset from the beginning of the file to the first byte in the section.
+/// One section type, SHT_NOBITS, occupies no space in the file, and its sh_offset
+/// holds the conceptual placement in the file.
+pub struct ElfSectionHeaderOffset {
+    offset: u64,
+}
+
+impl<R> FromReader<R> for ElfSectionHeaderOffset
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
+        let _offset = reader.stream_position()?;
+
+        context.read_offset(reader).map(|offset| Self { offset })
+    }
+}
+
+#[allow(clippy::unwrap_used)]
 #[cfg(test)]
 mod tests {
     mod test_elf_header_identification_magic {
