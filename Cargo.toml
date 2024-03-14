@@ -7,5 +7,7 @@ edition = "2021"
 
 [dependencies]
 bitflags = { version = "2.4.2", features = ["std"] }
+num-derive = "0.4.2"
+num-traits = "0.2.18"
 thiserror = "1.0.58"
 typed-builder = "0.18.1"
