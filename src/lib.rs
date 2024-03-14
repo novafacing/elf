@@ -3,554 +3,1037 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive as _, Saturating as _, SaturatingSub as _, ToPrimitive as _};
+use num_traits::FromPrimitive as _;
 use std::{
     fmt::Display,
-    io::{Read, Seek},
+    io::{Read, Seek, Write},
     mem::size_of,
 };
 use typed_builder::TypedBuilder;
 
-#[derive(TypedBuilder, Debug)]
-/// The context in which an ELF file is being handled
-pub struct Context {
-    #[builder(default)]
-    /// A set of errors to ignore if they occur. This is useful for handling errors that
-    /// are known to occur in certain files but are not critical to a point where the
-    /// ELF cannot be used.
-    pub ignore: Vec<Error>,
-    #[builder(default)]
-    /// Whether all errors should be ignored
-    pub ignore_all: bool,
-    #[builder(default = ElfHeaderIdentificationClass::ElfClass64)]
-    /// The class of the ELF file, which specifies the bit width of structures
-    /// and types in the file
-    pub class: ElfHeaderIdentificationClass,
-    #[builder(default = ElfHeaderIdentificationDataEncoding::LittleEndian)]
-    /// The data encoding of the ELF file, which specifies the byte order of the file's data
-    /// structures and types
-    pub data_encoding: ElfHeaderIdentificationDataEncoding,
-}
-
-impl Default for Context {
-    fn default() -> Self {
-        Self::builder().build()
-    }
-}
-
-impl Context {
-    #[allow(unused)] // NOTE: False positive
-    /// Check if an error should be ignored
-    pub fn should_ignore(&self, error: &Error) -> bool {
-        self.ignore_all || self.ignore.iter().map(|e| matches!(error, e)).any(|b| b)
-    }
-
-    /// Read an unsigned char from a reader
-    pub fn read_uchar<R>(&mut self, reader: &mut R) -> Result<u8, Error>
-    where
-        R: Read + Seek,
-    {
-        u8::from_reader_with(reader, self)
-    }
-
-    /// Read a half-word from a reader, where the size of the half-word read is
-    /// determined by the read context
-    pub fn read_half_word<R>(&mut self, reader: &mut R) -> Result<u16, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => {
-                Elf32HalfWord::from_reader_with(reader, self)
-            }
-            ElfHeaderIdentificationClass::ElfClass64 => {
-                Elf64HalfWord::from_reader_with(reader, self)
-            }
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 2)?,
-            }),
-        }
-    }
-
-    /// Read a word from a reader, where the size of the word read is determined by the
-    /// read context
-    pub fn read_word<R>(&mut self, reader: &mut R) -> Result<u32, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => ELf32Word::from_reader_with(reader, self),
-            ElfHeaderIdentificationClass::ElfClass64 => Elf64Word::from_reader_with(reader, self),
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 4)?,
-            }),
-        }
-    }
-
-    /// Read a signed word from a reader, where the size of the word read is determined by
-    /// the read context
-    pub fn read_signed_word<R>(&mut self, reader: &mut R) -> Result<i32, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => {
-                Elf32SignedWord::from_reader_with(reader, self)
-            }
-            ElfHeaderIdentificationClass::ElfClass64 => {
-                Elf64SignedWord::from_reader_with(reader, self)
-            }
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 4)?,
-            }),
-        }
-    }
-
-    /// Read an extended word from a reader, where the size of the extended word read is
-    /// determined by the read context
-    pub fn read_extended_word<R>(&mut self, reader: &mut R) -> Result<u64, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => {
-                Elf32ExtendedWord::from_reader_with(reader, self)
-            }
-            ElfHeaderIdentificationClass::ElfClass64 => {
-                Elf64ExtendedWord::from_reader_with(reader, self)
-            }
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 8)?,
-            }),
-        }
-    }
-
-    /// Read a signed extended word from a reader, where the size of the extended word read
-    /// is determined by the read context
-    pub fn read_signed_extended_word<R>(&mut self, reader: &mut R) -> Result<i64, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => {
-                Elf32SignedExtendedWord::from_reader_with(reader, self)
-            }
-            ElfHeaderIdentificationClass::ElfClass64 => {
-                Elf64SignedExtendedWord::from_reader_with(reader, self)
-            }
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 8)?,
-            }),
-        }
-    }
-
-    /// Read an address from a reader, where the size of the address read is determined by
-    /// the read context
-    pub fn read_address<R>(&mut self, reader: &mut R) -> Result<u64, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => {
-                Elf32Address::from_reader_with(reader, self).map(|v| v as u64)
-            }
-            ElfHeaderIdentificationClass::ElfClass64 => {
-                Elf64Address::from_reader_with(reader, self)
-            }
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 8)?,
-            }),
-        }
-    }
-
-    /// Read an offset from a reader, where the size of the offset read is determined by the
-    /// read context
-    pub fn read_offset<R>(&mut self, reader: &mut R) -> Result<u64, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => {
-                Elf32Offset::from_reader_with(reader, self).map(|v| v as u64)
-            }
-            ElfHeaderIdentificationClass::ElfClass64 => Elf64Offset::from_reader_with(reader, self),
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 8)?,
-            }),
-        }
-    }
-
-    /// Read a section from a reader, where the size of the section read is determined by the
-    /// read context
-    pub fn read_section<R>(&mut self, reader: &mut R) -> Result<u16, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => {
-                Elf32Section::from_reader_with(reader, self)
-            }
-            ElfHeaderIdentificationClass::ElfClass64 => {
-                Elf64Section::from_reader_with(reader, self)
-            }
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 2)?,
-            }),
-        }
-    }
-
-    /// Read a version symbol from a reader, where the size of the version symbol read is
-    /// determined by the read context
-    pub fn read_version_symbol<R>(&mut self, reader: &mut R) -> Result<u16, Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        match self.class {
-            ElfHeaderIdentificationClass::ElfClass32 => {
-                Elf32VersionSymbol::from_reader_with(reader, self)
-            }
-            ElfHeaderIdentificationClass::ElfClass64 => {
-                Elf64VersionSymbol::from_reader_with(reader, self)
-            }
-            _ => Err(Error::InvalidClass {
-                context: ErrorContext::from_reader(reader, offset, 2)?,
-            }),
-        }
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
-/// An error in ELF handling
+/// Error type for errors during ELF object handling
 pub enum Error {
     #[error(transparent)]
-    /// A wrapped IO error
-    IoError(#[from] std::io::Error),
-    #[error("Invalid magic {context} for ELF file. Expected {expected}.")]
-    /// An invalid magic number was found in the ELF file
-    InvalidMagic {
-        /// The context in which the error occurred
-        context: ErrorContext,
-        /// The expected context
-        expected: ErrorContext,
-    },
-    #[error("Invalid class {context} for ELF file.")]
-    /// An invalid class was found in the ELF file
+    /// Error from IO operations
+    Io(#[from] std::io::Error),
+    #[error("Invalid ELF class {class}")]
+    /// Invalid ELF class value
     InvalidClass {
-        /// The context in which the error occurred
-        context: ErrorContext,
+        /// The value that could not be interpreted as a class value
+        class: ElfByte,
     },
-    #[error("Invalid data encoding {context} for ELF file.")]
-    /// An invalid data encoding was found in the ELF file
+    #[error("Invalid ELF data encoding {encoding}")]
+    /// Invalid ELF data encoding value
     InvalidDataEncoding {
-        /// The context in which the error occurred
-        context: ErrorContext,
+        /// The value that could not be interpreted as a data encoding value
+        encoding: ElfByte,
     },
-    #[error("Invalid version {context} for ELF file.")]
-    /// An invalid file version was found in the ELF file
-    InvalidVersion {
-        /// The context in which the error occurred
-        context: ErrorContext,
+    #[error("Invalid ELF identifier version {version}")]
+    /// Invalid ELF version value
+    InvalidIdentifierVersion {
+        /// The value that could not be interpreted as a version value
+        version: ElfByte,
     },
-    #[error("Invalid OS/ABI {context} for ELF file.")]
-    /// An invalid OS/ABI was found in the ELF file
+    #[error("Invalid ELF OS ABI {os_abi}")]
+    /// Invalid ELF OS ABI value
     InvalidOsAbi {
-        /// The context in which the error occurred
-        context: ErrorContext,
+        /// The value that could not be interpreted as an OS ABI value
+        os_abi: ElfByte,
     },
-    #[error("Invalid ABI version {context} for ELF file.")]
-    /// An invalid ABI version was found in the ELF file
+    #[error("Invalid ELF ABI version {version}")]
+    /// Invalid ELF ABI version value
     InvalidAbiVersion {
-        /// The context in which the error occurred
-        context: ErrorContext,
+        /// The value that could not be interpreted as an ABI version value
+        version: ElfByte,
     },
-    #[error("Invalid type {context} for ELF file.")]
-    /// An invalid ELF type was found in the ELF file
+    #[error("Invalid ELF type {context}")]
+    /// Invalid ELF type value
     InvalidType {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid machine {context} for ELF file.")]
-    /// An invalid machine was found in the ELF file
-    InvalidMachine {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header name {context} for ELF file.")]
-    /// An invalid section header name was found in the ELF file
-    InvalidSectionHeaderName {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header type {context} for ELF file.")]
-    /// An invalid section header type was found in the ELF file
-    InvalidSectionHeaderType {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header flags {context} for ELF file.")]
-    /// An invalid section header flags were found in the ELF file
-    InvalidSectionHeaderFlags {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header address {context} for ELF file.")]
-    /// An invalid section header address was found in the ELF file
-    InvalidSectionHeaderAddress {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header offset {context} for ELF file.")]
-    /// An invalid section header offset was found in the ELF file
-    InvalidSectionHeaderOffset {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header size {context} for ELF file.")]
-    /// An invalid section header size was found in the ELF file
-    InvalidSectionHeaderSize {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header link {context} for ELF file.")]
-    /// An invalid section header link was found in the ELF file
-    InvalidSectionHeaderLink {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header info {context} for ELF file.")]
-    /// An invalid section header info was found in the ELF file
-    InvalidSectionHeaderInfo {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header alignment {context} for ELF file.")]
-    /// An invalid section header alignment was found in the ELF file
-    InvalidSectionHeaderAlignment {
-        /// The context in which the error occurred
-        context: ErrorContext,
-    },
-    #[error("Invalid section header entry size {context} for ELF file.")]
-    /// An invalid section header entry size was found in the ELF file
-    InvalidSectionHeaderEntrySize {
-        /// The context in which the error occurred
+        /// The decoding context
         context: ErrorContext,
     },
 }
 
-#[derive(TypedBuilder, Debug, Clone)]
-/// The context of an error in ELF handling
+#[derive(Debug, Clone)]
 pub struct ErrorContext {
-    /// The offset at which the error occurred
     pub offset: u64,
-    /// Relevant context for the error
-    pub context: Vec<u8>,
-}
-
-impl Display for ErrorContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let context = self
-            .context
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<Vec<_>>()
-            .join(" ");
-        write!(f, "0x{:x}: {}", self.offset, context)
-    }
+    pub context: Vec<u8>
 }
 
 impl ErrorContext {
-    /// Read an error context from a reader. Rewinds the reader to the original position
-    /// `offset` then reads the given size of bytes from the reader. This should generally
-    /// be used to "re-read" an erroneous value for reporting.
-    pub fn from_reader<R>(reader: &mut R, offset: u64, size: usize) -> Result<Self, Error>
+    pub fn from_reader<R>(reader: &mut R, offset: u64, size: usize) -> Result<Self, std::io::Error>
     where
         R: Read + Seek,
     {
         let mut context = vec![0; size];
         reader.seek(std::io::SeekFrom::Start(offset))?;
         reader.read_exact(&mut context)?;
-        Ok(Self::builder().offset(offset).context(context).build())
-    }
+        Ok(ErrorContext {
+            offset,
+            context
+        })
+    
 }
 
-type Elf32HalfWord = u16;
-type Elf64HalfWord = u16;
-type ELf32Word = u32;
-type Elf32SignedWord = i32;
-type Elf64Word = u32;
-type Elf64SignedWord = i32;
-type Elf32ExtendedWord = u64;
-type Elf32SignedExtendedWord = i64;
-type Elf64ExtendedWord = u64;
-type Elf64SignedExtendedWord = i64;
-type Elf32Address = u32;
-type Elf64Address = u64;
-type Elf32Offset = u32;
-type Elf64Offset = u64;
-type Elf32Section = u16;
-type Elf64Section = u16;
-type Elf32VersionSymbol = Elf32HalfWord;
-type Elf64VersionSymbol = Elf64HalfWord;
-
-/// Decode a value from a reader
+/// Decode an owned instance of a type from a reader
 pub trait FromReader<R>
 where
     R: Read + Seek,
     Self: Sized,
 {
-    /// An error that can occur when decoding a value from a reader
+    /// The error type for this operation
     type Error;
 
-    /// Decodes a value from a reader with a context and returns an owned instance of it
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error>;
-
-    /// Decodes a value from a reader and returns an owned instance of it, creating a new context
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let mut context = Context::builder().build();
-        Self::from_reader_with(reader, &mut context)
-    }
+    /// Decode an instance of this type from a reader
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error>;
 }
 
-// Implement FromReader for basic types
-macro_rules! impl_from_reader {
-    ($($t:ty),*) => {
-        $(
-            impl<R> FromReader<R> for $t
-            where
-                R: Read + Seek,
-            {
-                type Error = Error;
+/// Encode an instance of a type to a writer
+pub trait ToWriter<W>
+where
+    W: Write,
+    Self: Sized,
+{
+    /// The error type for this operation
+    type Error;
 
-                fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-                    let mut value = [0; std::mem::size_of::<Self>()];
-                    reader.read_exact(&mut value)?;
-                    if context.data_encoding == ElfHeaderIdentificationDataEncoding::BigEndian {
-                        Ok(Self::from_be_bytes(value))
-                    } else {
-                        Ok(Self::from_le_bytes(value))
-                    }
-                }
-            }
-        )*
-    };
+    /// Encode an instance of this type to a writer
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error>;
 }
 
-impl_from_reader!(u8, u16, u32, u64, i8, i16, i32, i64);
+/// Raw representation of a byte in an ELF file
+pub type RawElfByte = u8;
+/// Raw representation of a half-word in an ELF class 32 file
+pub type RawElf32HalfWord = u16;
+/// Raw representation of a word in an ELF class 32 file
+pub type RawElf32Word = u32;
+/// Raw representation of a signed word in an ELF class 32 file
+pub type RawElf32SignedWord = i32;
+/// Raw representation of an extended word in an ELF class 32 file
+pub type RawElf32ExtendedWord = u64;
+/// Raw representation of a signed extended word in an ELF class 32 file
+pub type RawElf32SignedExtendedWord = i64;
+/// Raw representation of an address in an ELF class 32 file
+pub type RawElf32Address = u32;
+/// Raw representation of an offset in an ELF class 32 file
+pub type RawElf32Offset = u32;
+/// Raw representation of a section index in an ELF class 32 file
+pub type RawElf32Section = u16;
+/// Raw representation of a version symbol in an ELF class 32 file
+pub type RawElf32VersionSymbol = u16;
+/// Raw representation of a half-word in an ELF class 64 file
+pub type RawElf64HalfWord = u16;
+/// Raw representation of a word in an ELF class 64 file
+pub type RawElf64Word = u32;
+/// Raw representation of a signed word in an ELF class 64 file
+pub type RawElf64SignedWord = i32;
+/// Raw representation of an extended word in an ELF class 64 file
+pub type RawElf64ExtendedWord = u64;
+/// Raw representation of a signed extended word in an ELF class 64 file
+pub type RawElf64SignedExtendedWord = i64;
+/// Raw representation of an address in an ELF class 64 file
+pub type RawElf64Address = u64;
+/// Raw representation of an offset in an ELF class 64 file
+pub type RawElf64Offset = u64;
+/// Raw representation of a section index in an ELF class 64 file
+pub type RawElf64Section = u16;
+/// Raw representation of a version symbol in an ELF class 64 file
+pub type RawElf64VersionSymbol = u16;
 
-#[repr(C, packed)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// A file's first 4 bytes hold a "magic number", identifying the file as an ELF object
-/// file.
-pub struct ElfHeaderIdentificationMagic {
-    /// The magic value which identifies an ELF file
-    pub magic: [u8; 4],
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A byte in an ELF file. Always represented as a single byte.
+pub struct ElfByte(u8);
 
-impl Default for ElfHeaderIdentificationMagic {
-    fn default() -> Self {
-        Self { magic: Self::MAGIC }
-    }
-}
-
-impl ElfHeaderIdentificationMagic {
-    /// The magic value which identifies an ELF file
-    pub const MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
-}
-
-impl<R> FromReader<R> for ElfHeaderIdentificationMagic
+impl<R> FromReader<R> for ElfByte
 where
     R: Read + Seek,
 {
     type Error = Error;
 
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
-        let mut magic = [0; 4];
-        reader.read_exact(&mut magic)?;
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let mut buf = [0; size_of::<RawElfByte>()];
+        reader.read_exact(&mut buf)?;
+        Ok(ElfByte(buf[0]))
+    }
+}
 
-        if magic != Self::MAGIC {
-            let error = Error::InvalidMagic {
-                context: ErrorContext::from_reader(reader, offset, magic.len())?,
-                expected: ErrorContext::builder()
-                    .offset(0)
-                    .context(Self::MAGIC.to_vec())
-                    .build(),
-            };
+impl<W> ToWriter<W> for ElfByte
+where
+    W: Write,
+{
+    type Error = Error;
 
-            context
-                .should_ignore(&error)
-                .then(|| Ok(Self::default()))
-                .unwrap_or(Err(error))
-        } else {
-            Ok(Self { magic })
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        writer.write_all(&[self.0])?;
+        Ok(())
+    }
+}
+
+impl Display for ElfByte {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A half-word in an ELF file. Represented as 16 bits for both classes.
+pub struct ElfHalfWord<const EC: u8, const ED: u8>(pub RawElf64HalfWord);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfHalfWord<EC, ED>
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64HalfWord>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfHalfWord::<EC, ED>(RawElf64HalfWord::from_le_bytes(buf)))
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64HalfWord>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfHalfWord::<EC, ED>(RawElf64HalfWord::from_be_bytes(buf)))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
         }
     }
 }
 
-#[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
-#[non_exhaustive]
-/// The file's class (noted as capacity in the ELF specification), i.e. its bit width,
-/// which also determines the size of the file's data structures and types.
-pub enum ElfHeaderIdentificationClass {
-    /// An invalid class
-    None = 0,
-    /// 32-bit objects
-    ElfClass32 = 1,
-    /// 64-bit objects
-    ElfClass64 = 2,
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfHalfWord<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
 }
 
-impl<R> FromReader<R> for ElfHeaderIdentificationClass
+impl<const EC: u8, const ED: u8> Display for ElfHalfWord<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A word in an ELF file. Always represented as 32 bits for both classes.
+///
+pub struct ElfWord<const EC: u8, const ED: u8>(pub RawElf64Word);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfWord<EC, ED>
 where
     R: Read + Seek,
 {
     type Error = Error;
 
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
 
-        context
-            .read_uchar(reader)
-            .and_then(|class| match Self::from_u8(class) {
-                Some(c) => {
-                    context.class = c.clone();
-                    Ok(c)
-                }
-                None => {
-                    let error = Error::InvalidClass {
-                        context: ErrorContext::from_reader(reader, offset, size_of::<Self>())?,
-                    };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64Word>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfWord::<EC, ED>(RawElf64Word::from_le_bytes(buf)))
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64Word>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfWord::<EC, ED>(RawElf64Word::from_be_bytes(buf)))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
 
-                    context.class = Self::None;
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfWord<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
 
-                    context
-                        .should_ignore(&error)
-                        .then(|| Ok(Self::None))
-                        .unwrap_or(Err(error))
-                }
-            })
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> Display for ElfWord<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A signed word in an ELF file. Represented as 32 bits for both classes.
+pub struct ElfSignedWord<const EC: u8, const ED: u8>(pub RawElf64SignedWord);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfSignedWord<EC, ED>
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64SignedWord>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfSignedWord::<EC, ED>(RawElf64SignedWord::from_le_bytes(
+                    buf,
+                )))
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64SignedWord>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfSignedWord::<EC, ED>(RawElf64SignedWord::from_be_bytes(
+                    buf,
+                )))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfSignedWord<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> Display for ElfSignedWord<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// An extended word in an ELF file. Represented as 64 bits for both classes.
+pub struct ElfExtendedWord<const EC: u8, const ED: u8>(pub u64);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfExtendedWord<EC, ED>
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64ExtendedWord>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfExtendedWord::<EC, ED>(
+                    RawElf64ExtendedWord::from_le_bytes(buf),
+                ))
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64ExtendedWord>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfExtendedWord::<EC, ED>(
+                    RawElf64ExtendedWord::from_be_bytes(buf),
+                ))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfExtendedWord<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> Display for ElfExtendedWord<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A signed extended word in an ELF file. Represented as 64 bits for both classes.
+pub struct ElfSignedExtendedWord<const EC: u8, const ED: u8>(pub i64);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfSignedExtendedWord<EC, ED>
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64SignedExtendedWord>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfSignedExtendedWord::<EC, ED>(
+                    RawElf64SignedExtendedWord::from_le_bytes(buf),
+                ))
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64SignedExtendedWord>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfSignedExtendedWord::<EC, ED>(
+                    RawElf64SignedExtendedWord::from_be_bytes(buf),
+                ))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfSignedExtendedWord<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> Display for ElfSignedExtendedWord<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// An address in an ELF file. Represented as 32 bits for class 32 and 64 bits for class 64.
+pub struct ElfAddress<const EC: u8, const ED: u8>(pub u64);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfAddress<EC, ED>
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf32Address>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfAddress::<EC, ED>(
+                    RawElf32Address::from_le_bytes(buf) as u64
+                ))
+            }
+            (ElfClass::Elf32, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf32Address>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfAddress::<EC, ED>(
+                    RawElf32Address::from_be_bytes(buf) as u64
+                ))
+            }
+            (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64Address>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfAddress::<EC, ED>(RawElf64Address::from_le_bytes(buf)))
+            }
+            (ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64Address>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfAddress::<EC, ED>(RawElf64Address::from_be_bytes(buf)))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfAddress<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&(self.0 as u32).to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&(self.0 as u32).to_be_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> Display for ElfAddress<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// An offset in an ELF file. Represented as 32 bits for class 32 and 64 bits for class 64.
+pub struct ElfOffset<const EC: u8, const ED: u8>(pub u64);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfOffset<EC, ED>
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf32Offset>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfOffset::<EC, ED>(
+                    RawElf32Offset::from_le_bytes(buf) as u64
+                ))
+            }
+            (ElfClass::Elf32, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf32Offset>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfOffset::<EC, ED>(
+                    RawElf32Offset::from_be_bytes(buf) as u64
+                ))
+            }
+            (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64Offset>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfOffset::<EC, ED>(RawElf64Offset::from_le_bytes(buf)))
+            }
+            (ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64Offset>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfOffset::<EC, ED>(RawElf64Offset::from_be_bytes(buf)))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfOffset<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&(self.0 as u32).to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&(self.0 as u32).to_be_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> Display for ElfOffset<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A section index in an ELF file. Represented as 16 bits for both classes.
+pub struct ElfSection<const EC: u8, const ED: u8>(pub u16);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfSection<EC, ED>
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64Section>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfSection::<EC, ED>(RawElf64Section::from_le_bytes(buf)))
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64Section>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfSection::<EC, ED>(RawElf64Section::from_be_bytes(buf)))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfSection<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> Display for ElfSection<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// A version symbol in an ELF file. Represented as 16 bits for both classes.
+pub struct ElfVersionSymbol<const EC: u8, const ED: u8>(pub u16);
+
+impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfVersionSymbol<EC, ED>
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                let mut buf = [0; size_of::<RawElf64VersionSymbol>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfVersionSymbol::<EC, ED>(
+                    RawElf64VersionSymbol::from_le_bytes(buf),
+                ))
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                let mut buf = [0; size_of::<RawElf64VersionSymbol>()];
+                reader.read_exact(&mut buf)?;
+                Ok(ElfVersionSymbol::<EC, ED>(
+                    RawElf64VersionSymbol::from_be_bytes(buf),
+                ))
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfVersionSymbol<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        let Some(class) = ElfClass::from_u8(EC) else {
+            return Err(Error::InvalidClass { class: ElfByte(EC) });
+        };
+        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
+            return Err(Error::InvalidDataEncoding {
+                encoding: ElfByte(ED),
+            });
+        };
+        match (class, data_encoding) {
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                writer.write_all(&self.0.to_le_bytes())?;
+                Ok(())
+            }
+            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
+                writer.write_all(&self.0.to_be_bytes())?;
+                Ok(())
+            }
+            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> Display for ElfVersionSymbol<EC, ED> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// 32-bit little-endian half word
+pub type Elf32LEHalfWord =
+    ElfHalfWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit little-endian word
+pub type Elf32LEWord = ElfWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit little-endian signed word
+pub type Elf32LESignedWord =
+    ElfSignedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit little-endian extended word
+pub type Elf32LEExtendedWord =
+    ElfExtendedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit little-endian signed extended word
+pub type Elf32LESignedExtendedWord =
+    ElfSignedExtendedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit little-endian address
+pub type Elf32LEAddress =
+    ElfAddress<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit little-endian offset
+pub type Elf32LEOffset =
+    ElfOffset<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit little-endian section
+pub type Elf32LESection =
+    ElfSection<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit little-endian version symbol
+pub type Elf32LEVersionSymbol =
+    ElfVersionSymbol<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 32-bit big-endian half word
+pub type Elf32BEHalfWord =
+    ElfHalfWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 32-bit big-endian word
+pub type Elf32BEWord = ElfWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 32-bit big-endian signed word
+pub type Elf32BESignedWord =
+    ElfSignedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 32-bit big-endian extended word
+pub type Elf32BEExtendedWord =
+    ElfExtendedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 32-bit big-endian signed extended word
+pub type Elf32BESignedExtendedWord =
+    ElfSignedExtendedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 32-bit big-endian address
+pub type Elf32BEAddress =
+    ElfAddress<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 32-bit big-endian offset
+pub type Elf32BEOffset = ElfOffset<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 32-bit big-endian section
+pub type Elf32BESection =
+    ElfSection<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 32-bit big-endian version symbol
+pub type Elf32BEVersionSymbol =
+    ElfVersionSymbol<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit little-endian half word
+pub type Elf64LEHalfWord =
+    ElfHalfWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit little-endian word
+pub type Elf64LEWord = ElfWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit little-endian signed word
+pub type Elf64LESignedWord =
+    ElfSignedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit little-endian extended word
+pub type Elf64LEExtendedWord =
+    ElfExtendedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit little-endian signed extended word
+pub type Elf64LESignedExtendedWord =
+    ElfSignedExtendedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit little-endian address
+pub type Elf64LEAddress =
+    ElfAddress<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit little-endian offset
+pub type Elf64LEOffset =
+    ElfOffset<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit little-endian section
+pub type Elf64LESection =
+    ElfSection<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit little-endian version symbol
+pub type Elf64LEVersionSymbol =
+    ElfVersionSymbol<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
+/// 64-bit big-endian half word
+pub type Elf64BEHalfWord =
+    ElfHalfWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit big-endian word
+pub type Elf64BEWord = ElfWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit big-endian signed word
+pub type Elf64BESignedWord =
+    ElfSignedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit big-endian extended word
+pub type Elf64BEExtendedWord =
+    ElfExtendedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit big-endian signed extended word
+pub type Elf64BESignedExtendedWord =
+    ElfSignedExtendedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit big-endian address
+pub type Elf64BEAddress =
+    ElfAddress<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit big-endian offset
+pub type Elf64BEOffset = ElfOffset<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit big-endian section
+pub type Elf64BESection =
+    ElfSection<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+/// 64-bit big-endian version symbol
+pub type Elf64BEVersionSymbol =
+    ElfVersionSymbol<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[non_exhaustive]
+/// The file's class/capacity, i.e. whether it is 32-bit or 64-bit.
+///
+/// A file's data encoding and class specifies how to interpret the basic objects in a
+/// file. Class ELFCLASS32 files use objects that occupy 1, 2, and 4 bytes. Class
+/// ELFCLASS64 files use objects that occupy 1, 2, 4, and 8 bytes. Under the defined
+/// encodings, objects are represented as shown below.
+pub enum ElfClass {
+    /// Unspecified (TODO: Make a best guess based on the file's contents)
+    ///
+    /// NOTE: It does not have to be a hard error to have a file with an unspecified
+    /// class, but the decoder will rely on a best guess based on the file's contents
+    /// which may not be accurate.
+    None = 0,
+    /// 32-bit
+    Elf32 = 1,
+    /// 64-bit
+    Elf64 = 2,
+}
+
+impl<R> FromReader<R> for ElfClass
+where
+    R: Read + Seek,
+{
+    type Error = Error;
+
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let class = ElfByte::from_reader(reader)?;
+        Self::from_u8(class.0).ok_or_else(|| Error::InvalidClass { class })
+    }
+}
+
+impl<W> ToWriter<W> for ElfClass
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        ElfByte(*self as u8).to_writer(writer)
     }
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
-/// The encoding of both the data structures used by object ﬁle container and data
-/// contained in object file sections. This encoding is used for all data structures
-/// in the object file, including the header, section header table, program header table,
-/// and sections, except for the identification field of the ELF header.
-pub enum ElfHeaderIdentificationDataEncoding {
-    /// An invalid data encoding
+/// The file's data encoding, i.e. whether it is little-endian or big-endian.
+///
+/// A file's data encoding and class specifies how to interpret the basic objects in a
+/// file. Encoding ELFDATA2LSB specifies 2's complement values, with the least
+/// significant byte occupying the lowest address.
+pub enum ElfDataEncoding {
+    /// Unspecified or invalid data encoding (TODO: Make a best guess based on the
+    /// file's contents)
+    ///
+    /// NOTE: It does not have to be a hard error to have a file with an unspecified
+    /// data encoding, but the decoder will rely on a best guess based on the file's
+    /// contents which may not be accurate.
     None = 0,
     /// Little-endian
     LittleEndian = 1,
@@ -558,89 +1041,84 @@ pub enum ElfHeaderIdentificationDataEncoding {
     BigEndian = 2,
 }
 
-impl<R> FromReader<R> for ElfHeaderIdentificationDataEncoding
+impl<R> FromReader<R> for ElfDataEncoding
 where
     R: Read + Seek,
 {
     type Error = Error;
 
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let encoding = ElfByte::from_reader(reader)?;
+        Self::from_u8(encoding.0).ok_or_else(|| Error::InvalidDataEncoding { encoding })
+    }
+}
 
-        context
-            .read_uchar(reader)
-            .and_then(|encoding| match Self::from_u8(encoding) {
-                Some(e) => {
-                    context.data_encoding = e.clone();
-                    Ok(e)
-                }
-                None => {
-                    let error = Error::InvalidDataEncoding {
-                        context: ErrorContext::from_reader(reader, offset, size_of::<Self>())?,
-                    };
+impl<W> ToWriter<W> for ElfDataEncoding
+where
+    W: Write,
+{
+    type Error = Error;
 
-                    context.data_encoding = Self::None;
-
-                    context
-                        .should_ignore(&error)
-                        .then(|| Ok(Self::None))
-                        .unwrap_or(Err(error))
-                }
-            })
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        ElfByte(*self as u8).to_writer(writer)
     }
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
-/// Specifies the ELF header version number.
-pub enum ElfHeaderIdentificationVersion {
-    /// An invalid version
+/// The file's version
+pub enum ElfIdentifierVersion {
+    /// Unspecified or invalid version
+    ///
+    /// NOTE: It is not a hard error to have an unspecified or invalid version,
+    /// and this field can be effectively ignored if desired.
     None = 0,
-    /// The current version of ELF
+    /// Current version
     Current = 1,
 }
 
-impl<R> FromReader<R> for ElfHeaderIdentificationVersion
+impl<R> FromReader<R> for ElfIdentifierVersion
 where
     R: Read + Seek,
 {
     type Error = Error;
 
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
-        context
-            .read_uchar(reader)
-            .and_then(|version| match Self::from_u8(version) {
-                Some(v) => Ok(v),
-                None => {
-                    let error = Error::InvalidVersion {
-                        context: ErrorContext::from_reader(reader, offset, size_of::<Self>())?,
-                    };
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let version = ElfByte::from_reader(reader)?;
+        Self::from_u8(version.0).ok_or_else(|| Error::InvalidIdentifierVersion { version })
+    }
+}
 
-                    context
-                        .should_ignore(&error)
-                        .then(|| Ok(Self::None))
-                        .unwrap_or(Err(error))
-                }
-            })
+impl<W> ToWriter<W> for ElfIdentifierVersion
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        ElfByte(*self as u8).to_writer(writer)
     }
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
+/// The file's OS/ABI
+///
 /// Identifies the OS- or ABI-specific ELF extensions used by this file. Some fields in
 /// other ELF structures have ﬂags and values that have operating system and/or ABI
 /// specific meanings; the interpretation of those fields is determined by the value of
 /// this byte. If the object file does not use any extensions, it is recommended that
 /// this byte be set to 0. If the value for this byte is 64 through 255, its meaning
-/// depends on the value of the e_machine header member. The ABI processor supplement
+/// depends on the value of the machine header member. The ABI processor supplement
 /// for an architecture can define its own associated set of values for this byte in this
 /// range. If the processor supplement does not specify a set of values, one of the
 /// following values shall be used, where 0 can also be taken to mean unspecified.
-pub enum ElfHeaderIdentificationOSABI {
-    /// Unix System V ABI or None, parsing None for this identification field is *not* an
+///
+/// NOTE: It is not a hard error to have an unspecified or invalid OS/ABI
+pub enum ElfOSABI {
+    /// Unix System V ABI or None, parsing None for this identifier field is *not* an
     /// error.
     NoneSystemV = 0,
     /// HP-UX
@@ -677,9 +1155,14 @@ pub enum ElfHeaderIdentificationOSABI {
     OpenVOS = 18,
     /// ARM EABI (the object file contains symbol versioning extensions as described
     /// in the aaelf32 documentation)
+    ///
+    /// NOTE: This value is specified by the the ARM ABI processor supplement.
     ArmExtendedApplicationBinaryInterface = 64,
     /// FDPIC ELF for either XTensa or ARM, depending on the detected machine. For ARM, this
     /// is described in the fdpic document.
+    ///
+    /// NOTE: This value is specified by the the ARM ABI processor supplement and the
+    /// XTensa ABI processor supplement, respectively, depending on the detected machine.
     ArmXTensaFunctionDescriptorPositionIndependentCode = 65,
     /// ARM (non-EABI)
     Arm = 97,
@@ -687,94 +1170,67 @@ pub enum ElfHeaderIdentificationOSABI {
     Standalone = 255,
 }
 
-impl<R> FromReader<R> for ElfHeaderIdentificationOSABI
+impl<R> FromReader<R> for ElfOSABI
 where
     R: Read + Seek,
 {
     type Error = Error;
 
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
-
-        context
-            .read_uchar(reader)
-            .and_then(|os_abi| match Self::from_u8(os_abi) {
-                Some(o) => Ok(o),
-                None => {
-                    let error = Error::InvalidOsAbi {
-                        context: ErrorContext::from_reader(reader, offset, size_of::<Self>())?,
-                    };
-
-                    context
-                        .should_ignore(&error)
-                        .then(|| Ok(Self::NoneSystemV))
-                        .unwrap_or(Err(error))
-                }
-            })
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let os_abi = ElfByte::from_reader(reader)?;
+        Self::from_u8(os_abi.0).ok_or_else(|| Error::InvalidOsAbi { os_abi })
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Marks the file as an object file and provide machine- independent data with which to
-/// decode and interpret the file's contents
-pub struct ElfHeaderIdentification {
-    /// See [ElfHeaderIdentificationMagic]
-    pub magic: ElfHeaderIdentificationMagic,
-    /// See [ElfHeaderIdentificationClass]
-    pub class: ElfHeaderIdentificationClass,
-    /// See [ElfHeaderIdentificationDataEncoding]
-    pub data_encoding: ElfHeaderIdentificationDataEncoding,
-    /// See [ElfHeaderIdentificationVersion]
-    pub version: ElfHeaderIdentificationVersion,
-    /// See [ElfHeaderIdentificationOSABI]
-    pub os_abi: ElfHeaderIdentificationOSABI,
+impl<W> ToWriter<W> for ElfOSABI
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        ElfByte(*self as u8).to_writer(writer)
+    }
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Clone, TypedBuilder)]
+/// The identifier field of an ELF header. Note that this structure is only
+/// decoded in order, with no regard to the file's class or data encoding, and
+/// is therefore always decoded the same way for all architectures and platforms.
+pub struct ElfHeaderIdentifier {
+    /// The magic value indicating that this is an ELF file (0x7F, 'E', 'L', 'F' in ASCII)
+    magic: [ElfByte; 4],
+    /// The file's class. See [ElfClass].
+    class: ElfClass,
+    /// The file's data encoding. See [ElfDataEncoding].
+    data_encoding: ElfDataEncoding,
+    /// The file's version. See [ElfIdentifierVersion].
+    version: ElfIdentifierVersion,
+    /// The file's OS/ABI. See [ElfOSABI].
+    os_abi: ElfOSABI,
+    /// The ABI version
+    ///
     /// Identifies the version of the ABI to which the object is targeted. This field is
     /// used to distinguish among incompatible versions of an ABI. The interpretation of
-    /// this version number is dependent on the ABI identified by the EI_OSABI field. If
-    /// no values are specified for the EI_OSABI field by the processor supplement or no
+    /// this version number is dependent on the ABI identified by the EI_OSABI field. If no
+    /// values are specified for the EI_OSABI field by the processor supplement or no
     /// version values are specified for the ABI determined by a particular value of the
-    /// EI_OSABI byte, the value 0 shall be used for the EI_ABIVERSION byte; it
-    /// indicates unspecified.
-    pub abi_version: u8,
-    /// This value marks the beginning of the unused bytes in e_ident. These bytes are
-    /// reserved and set to zero; programs that read object files should ignore them.
-    /// The value of EI_PAD will change in the future if currently unused bytes are
-    /// given meanings.
-    pub padding: [u8; 7],
-}
-
-impl<R> FromReader<R> for ElfHeaderIdentification
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let mut slf = Self {
-            magic: ElfHeaderIdentificationMagic::from_reader_with(reader, context)?,
-            class: ElfHeaderIdentificationClass::from_reader_with(reader, context)?,
-            data_encoding: ElfHeaderIdentificationDataEncoding::from_reader_with(reader, context)?,
-            version: ElfHeaderIdentificationVersion::from_reader_with(reader, context)?,
-            os_abi: ElfHeaderIdentificationOSABI::from_reader_with(reader, context)?,
-            abi_version: u8::from_reader_with(reader, context)?,
-            padding: [0; 7],
-        };
-
-        slf.padding.iter_mut().try_for_each(|p| {
-            *p = context.read_uchar(reader)?;
-            Ok::<(), Error>(())
-        })?;
-
-        Ok(slf)
-    }
+    /// EI_OSABI byte, the value 0 shall be used for the EI_ABIVERSION byte; it indicates
+    /// unspecified.
+    abi_version: ElfByte,
+    /// Marks the beginning of the unused bytes in the identifier. These bytes are
+    /// reserved and set to zero; programs that read object ﬁles should ignore them. The
+    /// value of EI_PAD will change in the future if currently unused bytes are given
+    /// meanings.
+    pad: [ElfByte; 7],
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
-/// Identifies the object file type
-pub enum ElfHeaderType {
+/// The ELF object type
+pub enum ElfType {
     /// No file type
     None = 0,
     /// Relocatable file type
@@ -797,39 +1253,12 @@ pub enum ElfHeaderType {
     HighProcessorSpecific = 0xffff,
 }
 
-impl<R> FromReader<R> for ElfHeaderType
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
-
-        context
-            .read_half_word(reader)
-            .and_then(|ty| match Self::from_u16(ty) {
-                Some(t) => Ok(t),
-                None => {
-                    let error = Error::InvalidType {
-                        context: ErrorContext::from_reader(reader, offset, size_of::<Self>())?,
-                    };
-
-                    context
-                        .should_ignore(&error)
-                        .then(|| Ok(Self::None))
-                        .unwrap_or(Err(error))
-                }
-            })
-    }
-}
-
-#[repr(u16)]
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
+#[repr(u16)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
-/// Elf Machine
-pub enum ElfHeaderMachine {
+/// The ELF object's machine
+pub enum ElfMachine {
     /// No machine
     NONE = 0,
     /// AT&T WE 32100
@@ -1210,612 +1639,339 @@ pub enum ElfHeaderMachine {
     LOONGARCH = 258,
 }
 
-impl<R> FromReader<R> for ElfHeaderMachine
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
-
-        context
-            .read_half_word(reader)
-            .and_then(|machine| match Self::from_u16(machine) {
-                Some(m) => Ok(m),
-                None => {
-                    let error = Error::InvalidMachine {
-                        context: ErrorContext::from_reader(reader, offset, size_of::<Self>())?,
-                    };
-
-                    context
-                        .should_ignore(&error)
-                        .then(|| Ok(Self::NONE))
-                        .unwrap_or(Err(error))
-                }
-            })
-    }
-}
-
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
-/// Identifies the object file version
-pub enum ElfHeaderVersion {
+/// The ELF object's version
+pub enum ElfVersion {
     /// Invalid version
     None = 0,
     /// Current version
     Current = 1,
 }
 
-impl<R> FromReader<R> for ElfHeaderVersion
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
-
-        context
-            .read_word(reader)
-            .and_then(|version| match Self::from_u32(version) {
-                Some(v) => Ok(v),
-                None => {
-                    let error = Error::InvalidVersion {
-                        context: ErrorContext::from_reader(reader, offset, size_of::<Self>())?,
-                    };
-
-                    context
-                        .should_ignore(&error)
-                        .then(|| Ok(Self::None))
-                        .unwrap_or(Err(error))
-                }
-            })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Contains the virtual address of the entry point of the object file, if there
-/// is one. Otherwise, the value is 0. Some architectures or platforms may require
-/// a non-zero value for the entry point, but some may allow it.
-pub struct ElfHeaderEntry {
-    entry: u64,
-}
-
-impl<R> FromReader<R> for ElfHeaderEntry
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-
-        // TODO: Handle invalid address
-
-        context.read_offset(reader).map(|entry| Self { entry })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The program header table file offset in bytes. If the file has no program header table, the value is 0.
-pub struct ElfHeaderProgramHeaderOffset {
-    offset: u64,
-}
-
-impl<R> FromReader<R> for ElfHeaderProgramHeaderOffset
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_offset(reader).map(|offset| Self { offset })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The section header table file offset in bytes. If the file has no section header table, the value is 0.
-pub struct ElfHeaderSectionHeaderOffset {
-    offset: u64,
-}
-
-impl<R> FromReader<R> for ElfHeaderSectionHeaderOffset
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_offset(reader).map(|offset| Self { offset })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The processor-specific flags associated with the file. Flag names and values for the flags are architecture-specific.
-pub struct ElfHeaderFlags {
-    flags: u32,
-}
-
-impl<R> FromReader<R> for ElfHeaderFlags
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_word(reader).map(|flags| Self { flags })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The size in bytes of the ELF header
-pub struct ElfHeaderSize {
-    size: u16,
-}
-
-impl<R> FromReader<R> for ElfHeaderSize
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_half_word(reader).map(|size| Self { size })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The size in bytes of a program header table entry
-pub struct ElfHeaderProgramHeaderEntrySize {
-    size: u16,
-}
-
-impl<R> FromReader<R> for ElfHeaderProgramHeaderEntrySize
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_half_word(reader).map(|size| Self { size })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The number of entries in the program header table
-pub struct ElfHeaderProgramHeaderEntryNumber {
-    number: u16,
-}
-
-impl<R> FromReader<R> for ElfHeaderProgramHeaderEntryNumber
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_half_word(reader).map(|number| Self { number })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The size in bytes of a section header table entry
-pub struct ElfHeaderSectionHeaderEntrySize {
-    size: u16,
-}
-
-impl<R> FromReader<R> for ElfHeaderSectionHeaderEntrySize
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_half_word(reader).map(|size| Self { size })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The number of entries in the section header table
-///
-/// If the number of sections is greater than or equal to SHN_LORESERVE (0xﬀ00), e_shnum
-/// has the value SHN_UNDEF (0) and the actual number of section header table entries is
-/// contained in the sh_size field of the section header at index 0 (otherwise, the
-/// sh_size member of the initial entry contains 0).
-pub struct ElfHeaderSectionHeaderEntryNumber {
-    number: u16,
-}
-
-impl<R> FromReader<R> for ElfHeaderSectionHeaderEntryNumber
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_half_word(reader).map(|number| Self { number })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The section header table index of the entry associated with the section name string table
-pub struct ElfHeaderSectionHeaderStringTableIndex {
-    index: u16,
-}
-
-impl<R> FromReader<R> for ElfHeaderSectionHeaderStringTableIndex
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_half_word(reader).map(|index| Self { index })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, PartialEq, Eq, Hash)]
-/// The ELF header, which is located at the beginning of the file, is always present in
-/// any ELF file, and is the only header which must reside at a specific location.
-pub struct ElfHeader {
-    /// See [ElfHeaderIdentification]
-    pub identification: ElfHeaderIdentification,
-    /// See [ElfHeaderType]
-    pub r#type: ElfHeaderType,
-    /// See [ElfHeaderMachine]
-    pub machine: ElfHeaderMachine,
-    /// See [ElfHeaderVersion]
-    pub version: ElfHeaderVersion,
-    /// See [ElfHeaderEntry]
-    pub entry: ElfHeaderEntry,
-    /// See [ElfHeaderProgramHeaderOffset]
-    pub program_header_offset: ElfHeaderProgramHeaderOffset,
-    /// See [ElfHeaderSectionHeaderOffset]
-    pub section_header_offset: ElfHeaderSectionHeaderOffset,
-    /// See [ElfHeaderFlags]
-    pub flags: ElfHeaderFlags,
-    /// See [ElfHeaderSize]
-    pub size: ElfHeaderSize,
-    /// See [ElfHeaderProgramHeaderEntrySize]
-    pub program_header_entry_size: ElfHeaderProgramHeaderEntrySize,
-    /// See [ElfHeaderProgramHeaderEntryNumber]
-    pub program_header_entry_number: ElfHeaderProgramHeaderEntryNumber,
-    /// See [ElfHeaderSectionHeaderEntrySize]
-    pub section_header_entry_size: ElfHeaderSectionHeaderEntrySize,
-    /// See [ElfHeaderSectionHeaderEntryNumber]
-    pub section_header_entry_number: ElfHeaderSectionHeaderEntryNumber,
-    /// See [ElfHeaderSectionHeaderStringTableIndex]
-    pub section_header_string_table_index: ElfHeaderSectionHeaderStringTableIndex,
-    /// Extra data that is part of the ELF header but does not have a
-    /// specification-defined structure.
-    pub data: Vec<u8>,
-}
-
-impl<R> FromReader<R> for ElfHeader
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let identification = ElfHeaderIdentification::from_reader_with(reader, context)?;
-        let r#type = ElfHeaderType::from_reader_with(reader, context)?;
-        let machine = ElfHeaderMachine::from_reader_with(reader, context)?;
-        let version = ElfHeaderVersion::from_reader_with(reader, context)?;
-        let entry = ElfHeaderEntry::from_reader_with(reader, context)?;
-        let program_header_offset =
-            ElfHeaderProgramHeaderOffset::from_reader_with(reader, context)?;
-        let section_header_offset =
-            ElfHeaderSectionHeaderOffset::from_reader_with(reader, context)?;
-        let flags = ElfHeaderFlags::from_reader_with(reader, context)?;
-        let size = ElfHeaderSize::from_reader_with(reader, context)?;
-        let program_header_entry_size =
-            ElfHeaderProgramHeaderEntrySize::from_reader_with(reader, context)?;
-        let program_header_entry_number =
-            ElfHeaderProgramHeaderEntryNumber::from_reader_with(reader, context)?;
-        let section_header_entry_size =
-            ElfHeaderSectionHeaderEntrySize::from_reader_with(reader, context)?;
-        let section_header_entry_number =
-            ElfHeaderSectionHeaderEntryNumber::from_reader_with(reader, context)?;
-        let section_header_string_table_index =
-            ElfHeaderSectionHeaderStringTableIndex::from_reader_with(reader, context)?;
-        let mut data = vec![
-            0;
-            (size.size as usize).saturating_sub(
-                size_of::<ElfHeaderIdentification>()
-                    + size_of::<ElfHeaderType>()
-                    + size_of::<ElfHeaderMachine>()
-                    + size_of::<ElfHeaderVersion>()
-                    + size_of::<ElfHeaderEntry>()
-                    + size_of::<ElfHeaderProgramHeaderOffset>()
-                    + size_of::<ElfHeaderSectionHeaderOffset>()
-                    + size_of::<ElfHeaderFlags>()
-                    + size_of::<ElfHeaderSize>()
-                    + size_of::<ElfHeaderProgramHeaderEntrySize>()
-                    + size_of::<ElfHeaderProgramHeaderEntryNumber>()
-                    + size_of::<ElfHeaderSectionHeaderEntrySize>()
-                    + size_of::<ElfHeaderSectionHeaderEntryNumber>()
-                    + size_of::<ElfHeaderSectionHeaderStringTableIndex>()
-            )
-        ];
-
-        data.iter_mut().try_for_each(|d| {
-            *d = context.read_uchar(reader)?;
-            Ok::<(), Error>(())
-        })?;
-
-        Ok(Self {
-            identification,
-            r#type,
-            machine,
-            version,
-            entry,
-            program_header_offset,
-            section_header_offset,
-            flags,
-            size,
-            program_header_entry_size,
-            program_header_entry_number,
-            section_header_entry_size,
-            section_header_entry_number,
-            section_header_string_table_index,
-            data,
-        })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The index into the section header string table string where the section name is located
-pub struct ElfSectionHeaderNameIndex {
-    index: u32,
-}
-
-impl<R> FromReader<R> for ElfSectionHeaderNameIndex
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-        context.read_word(reader).map(|index| Self { index })
-    }
-}
-
-#[repr(u64)]
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
-#[non_exhaustive]
-/// The section's type
-pub enum ElfSectionHeaderType {
-    /// Section header table entry unused
-    Null = 0,
-    /// Program data
-    ProgBits = 1,
-    /// Symbol table
-    SymTab = 2,
-    /// String table
-    StrTab = 3,
-    /// Relocation entries with addends
-    Rela = 4,
-    /// Symbol hash table
-    Hash = 5,
-    /// Dynamic linking information
-    Dynamic = 6,
-    /// Note section
-    Note = 7,
-    /// Uninitialized space
-    NoBits = 8,
-    /// Relocation entries, no addends
-    Rel = 9,
-    /// Reserved
-    ShLib = 10,
-    /// Dynamic linker symbol table
-    DynSym = 11,
-    /// Array of constructors
-    InitArray = 14,
-    /// Array of destructors
-    FiniArray = 15,
-    /// Array of pre-constructors
-    PreInitArray = 16,
-    /// Section group
-    Group = 17,
-    /// Extended section indices
-    SymTabShndx = 18,
-    /// Number of defined types
-    NumberDefined = 19,
-    /// Start OS-specific
-    LowOsSpecific = 0x60000000,
-    /// End OS-specific
-    HighOsSpecific = 0x6fffffff,
-    /// Start processor-specific
-    LowProcessorSpecific = 0x70000000,
-    /// End processor-specific
-    HighProcessorSpecific = 0x7fffffff,
-    /// Start application-specific
-    LowApplicationSpecific = 0x80000000,
-    /// End application-specific
-    HighApplicationSpecific = 0xffffffff,
-}
-
-impl<R> FromReader<R> for ElfSectionHeaderType
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let offset = reader.stream_position()?;
-
-        context
-            .read_word(reader)
-            .and_then(|ty| match Self::from_u32(ty) {
-                Some(t) => Ok(t),
-                None => {
-                    let error = Error::InvalidSectionHeaderType {
-                        context: ErrorContext::from_reader(reader, offset, size_of::<Self>())?,
-                    };
-
-                    context
-                        .should_ignore(&error)
-                        .then(|| Ok(Self::Null))
-                        .unwrap_or(Err(error))
-                }
-            })
-    }
-}
-
-#[repr(u64)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
-#[non_exhaustive]
-/// Specially reserved section header numbers
-pub enum ElfSectionHeaderNumber {
-    /// This value marks an undeﬁned, missing, irrelevant, or otherwise
-    /// meaningless section reference. For example, a symbol ``deﬁned''
-    /// relative to section number SHN_UNDEF is an undeﬁned symbol.
-    ///
-    /// Although index 0 is reserved as the undefined value, the section header
-    /// table contains an entry for index 0. If the e_shnum member of the ELF
-    /// header says a file has 6 entries in the section header table, they have the
-    /// indexes 0 through 5. The contents of the initial entry are specified later in
-    /// this section
-    Undefined = 0,
-    /// This value specifies the lower bound of the range of reserved indexes
-    /// for both section header indices in general and for processor-specific
-    /// semantics.
-    LowerReservedProcessorSpecific = 0xff00,
-    /// This value specifies the upper bound of the range of reserved indexes
-    /// for processor-specific semantics.
-    HigherReservedProcessorSpecific = 0xff1f,
-    /// This value specifies the lower bound of the range of reserved indexes
-    /// for operating system-specific semantics.
-    LowerOperatingSystemSpecific = 0xff20,
-    /// This value specifies the upper bound of the range of reserved indexes
-    /// for operating system-specific semantics.
-    HigherOperatingSystemSpecific = 0xff3f,
-    /// This value specifies absolute values for the corresponding reference.  For
-    /// example, symbols defined relative to section number SHN_ABS have absolute values
-    /// and are not aﬀected by relocation.
-    AbsoluteValue = 0xfff1,
-    /// Symbols defined relative to this section are common symbols, such as FORTRAN
-    /// COMMON or unallocated C external variables.
-    CommonSymbols = 0xfff2,
-    /// This value is an escape value. It indicates that the actual section header index
-    /// is too large to fit in the containing field and is to be found in another location
-    /// (specific to the structure where it appears).
-    XIndex = 0xffff,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The section's flags which describe various attributes
-pub struct ElfSectionHeaderFlags(u32);
-
-impl<R> FromReader<R> for ElfSectionHeaderFlags
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-
-        context.read_word(reader).map(Self).or_else(|error| {
-            context
-                .should_ignore(&error)
-                .then(|| Ok(Self(0)))
-                .unwrap_or(Err(error))
-        })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The address of the section in memory, if it is to appear in the memory image of a process.
-/// Otherwise, the value is 0.
-pub struct ElfSectionHeaderAddress {
-    address: u64,
-}
-
-impl<R> FromReader<R> for ElfSectionHeaderAddress
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-
-        context.read_offset(reader).map(|address| Self { address })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The byte offset from the beginning of the file to the first byte in the section.
-/// One section type, SHT_NOBITS, occupies no space in the file, and its sh_offset
-/// holds the conceptual placement in the file.
-pub struct ElfSectionHeaderOffset {
-    offset: u64,
-}
-
-impl<R> FromReader<R> for ElfSectionHeaderOffset
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader_with(reader: &mut R, context: &mut Context) -> Result<Self, Self::Error> {
-        let _offset = reader.stream_position()?;
-
-        context.read_offset(reader).map(|offset| Self { offset })
-    }
+/// The header for an ELF object. Resides at the beginning and holds a ``road map''
+/// describing the file's organization
+pub struct ElfHeader<const EC: u8, const ED: u8> {
+    /// The file's identifier information, which marks the file as an object file
+    /// and provide machine- independent data with which to decode and interpret the
+    pub identifier: ElfHeaderIdentifier,
+    /// The object file type
+    pub r#type: ElfType,
+    /// The file's machine, which specifies the required architecture for this
+    /// object file
+    pub machine: ElfMachine,
+    /// The object file version
+    pub version: ElfVersion,
+    /// The file's entrypoint. This is the virtual address to which the system
+    /// first transfers control, thus starting the process. If the object has no
+    /// associated entry point, this member is zero (absent).
+    pub entrypoint: Option<ElfAddress<EC, ED>>,
+    /// The program header table's file offset in bytes. If the file has no program
+    /// header table, this member is zero (absent).
+    pub program_header_offset: Option<ElfOffset<EC, ED>>,
+    /// The section header table's file offset in bytes. If the file has no section
+    /// header table, this member is zero (absent).
+    pub section_header_offset: Option<ElfOffset<EC, ED>>,
+    /// The processor-specific flags associated with the file.
+    /// TODO: Make this a trait abstract over the various architectures' flags
+    pub flags: ElfWord<EC, ED>,
+    /// The ELF header's size in bytes
+    pub header_size: ElfHalfWord<EC, ED>,
+    /// The size in bytes of a program header table entry; all entries are the same
+    /// size
+    pub program_header_entry_size: ElfHalfWord<EC, ED>,
+    /// The number of entries in the program header table. If the file has no
+    /// program header table, this member is zero (absent).
+    pub program_header_entry_count: ElfHalfWord<EC, ED>,
+    /// The size in bytes of a section header table entry; all entries are the same
+    /// size
+    pub section_header_entry_size: ElfHalfWord<EC, ED>,
+    /// The number of entries in the section header table.  Thus the product of
+    /// e_shentsize and e_shnum gives the section header table's size in bytes. If a file
+    /// has no section header table, e_shnum holds the value zero.  If the number of
+    /// sections is greater than or equal to SHN_LORESERVE (0xﬀ00), this member has the
+    /// value zero and the actual number of section header table entries is contained in
+    /// the sh_size field of the section header at index 0. (Otherwise, the sh_size
+    /// member of the initial entry contains 0.)
+    pub section_header_entry_count: ElfHalfWord<EC, ED>,
+    /// This member holds the section header table index of the entry associated with
+    /// the section name string table. If the file has no section name string table, this
+    /// member holds the value SHN_UNDEF. See ``Sections'' and ``String Table'' below
+    /// for more information.  If the section name string table section index is greater
+    /// than or equal to SHN_LORESERVE (0xﬀ00), this member has the value SHN_XINDEX
+    /// (0xﬀﬀ) and the actual index of the section name string table section is
+    /// contained in the sh_link field of the section header at index 0.  (Otherwise, the
+    /// sh_link member of the initial entry contains 0.)
+    pub section_name_string_table_index: ElfHalfWord<EC, ED>,
 }
 
 #[allow(clippy::unwrap_used)]
 #[cfg(test)]
-mod tests {
-    mod test_elf_header_identification_magic {
-        use super::super::*;
+mod test {
+    use super::*;
 
-        #[test]
-        fn test_elf_header_identification_magic() {
-            let mut reader = std::io::Cursor::new(&[0x7f, b'E', b'L', b'F']);
-            let magic = ElfHeaderIdentificationMagic::from_reader(&mut reader).unwrap();
-            assert_eq!(magic.magic, [0x7f, b'E', b'L', b'F']);
-        }
+    #[test]
+    fn test_elf_half_word() {
+        let mut val = &[0x01, 0x02];
+        let le32hw: Elf32LEHalfWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32hw: Elf32BEHalfWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64hw: Elf64LEHalfWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64hw: Elf64BEHalfWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        assert_eq!(le32hw.0, 0x0201);
+        assert_eq!(be32hw.0, 0x0102);
+        assert_eq!(le64hw.0, 0x0201);
+        assert_eq!(be64hw.0, 0x0102);
 
-        #[test]
-        fn test_elf_header_identification_magic_invalid() {
-            let mut reader = std::io::Cursor::new(&[0x7f, b'E', b'L', b'G']);
-            let error = ElfHeaderIdentificationMagic::from_reader(&mut reader).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "Invalid magic 0x0: 7f 45 4c 47 for ELF file. Expected 0x0: 7f 45 4c 46."
-            );
-        }
+        let mut val_out = Vec::new();
+        le32hw.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be32hw.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        le64hw.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64hw.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+    }
+
+    #[test]
+    fn test_elf_word() {
+        let mut val = &[0x01, 0x02, 0x03, 0x04];
+        let le32w: Elf32LEWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32w: Elf32BEWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64w: Elf64LEWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64w: Elf64BEWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        assert_eq!(le32w.0, 0x04030201);
+        assert_eq!(be32w.0, 0x01020304);
+        assert_eq!(le64w.0, 0x04030201);
+        assert_eq!(be64w.0, 0x01020304);
+        let mut val_out = Vec::new();
+        le32w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be32w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        le64w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+    }
+
+    #[test]
+    fn test_elf_signed_word() {
+        let mut val = &[0x01, 0x02, 0x03, 0x04];
+        let le32w: Elf32LEWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32w: Elf32BEWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64w: Elf64LEWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64w: Elf64BEWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        assert_eq!(le32w.0, 0x04030201);
+        assert_eq!(be32w.0, 0x01020304);
+        assert_eq!(le64w.0, 0x04030201);
+        assert_eq!(be64w.0, 0x01020304);
+        let mut val_out = Vec::new();
+        le32w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be32w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        le64w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+    }
+
+    #[test]
+    fn test_elf_extended_word() {
+        let mut val = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let le32w: Elf32LEExtendedWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32w: Elf32BEExtendedWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64w: Elf64LEExtendedWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64w: Elf64BEExtendedWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        assert_eq!(le32w.0, 0x0807060504030201);
+        assert_eq!(be32w.0, 0x0102030405060708);
+        assert_eq!(le64w.0, 0x0807060504030201);
+        assert_eq!(be64w.0, 0x0102030405060708);
+        let mut val_out = Vec::new();
+        le32w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be32w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        le64w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+    }
+
+    #[test]
+    fn test_elf_signed_extended_word() {
+        let mut val = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let le32w: Elf32LESignedExtendedWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32w: Elf32BESignedExtendedWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64w: Elf64LESignedExtendedWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64w: Elf64BESignedExtendedWord =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        assert_eq!(le32w.0, 0x0807060504030201);
+        assert_eq!(be32w.0, 0x0102030405060708);
+        assert_eq!(le64w.0, 0x0807060504030201);
+        assert_eq!(be64w.0, 0x0102030405060708);
+        let mut val_out = Vec::new();
+        le32w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be32w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        le64w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64w.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+    }
+
+    #[test]
+    fn test_elf_address() {
+        let mut val = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let le32a: Elf32LEAddress =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32a: Elf32BEAddress =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64a: Elf64LEAddress =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64a: Elf64BEAddress =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+
+        assert_eq!(le32a.0, 0x04030201);
+        assert_eq!(be32a.0, 0x01020304);
+        assert_eq!(le64a.0, 0x0807060504030201);
+        assert_eq!(be64a.0, 0x0102030405060708);
+
+        let mut val_out = Vec::new();
+        le32a.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val[..4]);
+        val_out.clear();
+        be32a.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val[..4]);
+        val_out.clear();
+        le64a.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64a.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+    }
+
+    #[test]
+    fn test_elf_offset() {
+        let mut val = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let le32o: Elf32LEOffset =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32o: Elf32BEOffset =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64o: Elf64LEOffset =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64o: Elf64BEOffset =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        assert_eq!(le32o.0, 0x04030201);
+        assert_eq!(be32o.0, 0x01020304);
+        assert_eq!(le64o.0, 0x0807060504030201);
+        assert_eq!(be64o.0, 0x0102030405060708);
+        let mut val_out = Vec::new();
+        le32o.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val[..4]);
+        val_out.clear();
+        be32o.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val[..4]);
+        val_out.clear();
+        le64o.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64o.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+    }
+
+    #[test]
+    fn test_elf_section() {
+        let mut val = &[0x01, 0x02];
+        let le32s: Elf32LESection =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32s: Elf32BESection =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64s: Elf64LESection =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64s: Elf64BESection =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        assert_eq!(le32s.0, 0x0201);
+        assert_eq!(be32s.0, 0x0102);
+        assert_eq!(le64s.0, 0x0201);
+        assert_eq!(be64s.0, 0x0102);
+        let mut val_out = Vec::new();
+        le32s.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be32s.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        le64s.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64s.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+    }
+
+    #[test]
+    fn test_elf_version_symbol() {
+        let mut val = &[0x01, 0x02];
+        let le32vs: Elf32LEVersionSymbol =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be32vs: Elf32BEVersionSymbol =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let le64vs: Elf64LEVersionSymbol =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        let be64vs: Elf64BEVersionSymbol =
+            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
+        assert_eq!(le32vs.0, 0x0201);
+        assert_eq!(be32vs.0, 0x0102);
+        assert_eq!(le64vs.0, 0x0201);
+        assert_eq!(be64vs.0, 0x0102);
+        let mut val_out = Vec::new();
+        le32vs.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be32vs.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        le64vs.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
+        val_out.clear();
+        be64vs.to_writer(&mut val_out).unwrap();
+        assert_eq!(val_out, val);
     }
 }
