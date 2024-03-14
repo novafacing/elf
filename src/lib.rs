@@ -1947,6 +1947,7 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// The header for an ELF object. Resides at the beginning and holds a ``road map''
 /// describing the file's organization
 pub struct ElfHeader<const EC: u8, const ED: u8> {
@@ -2335,10 +2336,243 @@ mod test {
         assert_eq!(val_out, val);
     }
 
-    // Test the ELF header identifier in each endianness and class
+    #[test]
+    // Only need one test for identifier, it is not class/encoding dependent
+    fn test_elf_identifier() {
+        let mut bytes = &[
+            // Magic
+            0x7f, 0x45, 0x4c, 0x46, // Class (32)
+            0x01, // Data encoding (LE)
+            0x01, // Version (Current)
+            0x01, // OS ABI (SystemV)
+            0x00, // ABI Version
+            0x00, // Padding
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let id = ElfHeaderIdentifier::from_reader(&mut std::io::Cursor::new(&mut bytes)).unwrap();
+
+        let mut bytes_out = Vec::new();
+        id.to_writer(&mut bytes_out).unwrap();
+        assert_eq!(bytes, bytes_out.as_slice());
+        assert_eq!(
+            id,
+            ElfHeaderIdentifier {
+                magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
+                class: ElfClass::Elf32,
+                data_encoding: ElfDataEncoding::LittleEndian,
+                version: ElfIdentifierVersion::Current,
+                os_abi: ElfOSABI::NoneSystemV,
+                abi_version: ElfByte(0),
+                pad: [ElfByte(0); 7],
+            }
+        );
+    }
 
     #[test]
-    fn test_elf_identifier_le32() {
+    fn test_elf_type() {
+        let mut bytes_le = &[0x01, 0x00];
+        let mut bytes_be = &[0x00, 0x01];
+
+        let le32t = ElfType::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be32t = ElfType::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+        let le64t = ElfType::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be64t = ElfType::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+
+        assert_eq!(le32t, ElfType::Relocatable);
+        assert_eq!(be32t, ElfType::Relocatable);
+        assert_eq!(le64t, ElfType::Relocatable);
+        assert_eq!(be64t, ElfType::Relocatable);
+
+        let mut le32t_out = Vec::new();
+        le32t.to_writer(&mut le32t_out).unwrap();
+        assert_eq!(le32t_out, bytes_le);
+        let mut be32t_out = Vec::new();
+        be32t.to_writer(&mut be32t_out).unwrap();
+        assert_eq!(be32t_out, bytes_be);
+        let mut le64t_out = Vec::new();
+        le64t.to_writer(&mut le64t_out).unwrap();
+        assert_eq!(le64t_out, bytes_le);
+        let mut be64t_out = Vec::new();
+        be64t.to_writer(&mut be64t_out).unwrap();
+        assert_eq!(be64t_out, bytes_be);
+    }
+
+    #[test]
+    fn test_elf_machine() {
+        let mut bytes_le = &[0x03, 0x00];
+        let mut bytes_be = &[0x00, 0x03];
+
+        let le32m = ElfMachine::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be32m = ElfMachine::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+        let le64m = ElfMachine::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be64m = ElfMachine::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+
+        assert_eq!(le32m, ElfMachine::I386);
+        assert_eq!(be32m, ElfMachine::I386);
+        assert_eq!(le64m, ElfMachine::I386);
+        assert_eq!(be64m, ElfMachine::I386);
+
+        let mut le32m_out = Vec::new();
+        le32m.to_writer(&mut le32m_out).unwrap();
+        assert_eq!(le32m_out, bytes_le);
+        let mut be32m_out = Vec::new();
+        be32m.to_writer(&mut be32m_out).unwrap();
+        assert_eq!(be32m_out, bytes_be);
+        let mut le64m_out = Vec::new();
+        le64m.to_writer(&mut le64m_out).unwrap();
+        assert_eq!(le64m_out, bytes_le);
+        let mut be64m_out = Vec::new();
+        be64m.to_writer(&mut be64m_out).unwrap();
+    }
+
+    #[test]
+    fn test_elf_version() {
+        let mut bytes_le = &[0x01, 0x00, 0x00, 0x00];
+        let mut bytes_be = &[0x00, 0x00, 0x00, 0x01];
+
+        let le32v = ElfVersion::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be32v = ElfVersion::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+        let le64v = ElfVersion::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be64v = ElfVersion::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+
+        assert_eq!(le32v, ElfVersion::Current);
+        assert_eq!(be32v, ElfVersion::Current);
+        assert_eq!(le64v, ElfVersion::Current);
+        assert_eq!(be64v, ElfVersion::Current);
+
+        let mut le32v_out = Vec::new();
+        le32v.to_writer(&mut le32v_out).unwrap();
+        assert_eq!(le32v_out, bytes_le);
+        let mut be32v_out = Vec::new();
+        be32v.to_writer(&mut be32v_out).unwrap();
+        assert_eq!(be32v_out, bytes_be);
+        let mut le64v_out = Vec::new();
+        le64v.to_writer(&mut le64v_out).unwrap();
+        assert_eq!(le64v_out, bytes_le);
+        let mut be64v_out = Vec::new();
+        be64v.to_writer(&mut be64v_out).unwrap();
+        assert_eq!(be64v_out, bytes_be);
+    }
+
+    #[test]
+    fn test_elf_entry() {
+        let mut bytes_le = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let mut bytes_be = &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01];
+
+        let le32e = ElfAddress::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be32e = ElfAddress::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+        let le64e = ElfAddress::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be64e = ElfAddress::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+
+        assert_eq!(le32e.0, 0x04030201);
+        assert_eq!(be32e.0, 0x08070605);
+        assert_eq!(le64e.0, 0x0807060504030201);
+        assert_eq!(be64e.0, 0x0807060504030201);
+
+        let mut le32e_out = Vec::new();
+        le32e.to_writer(&mut le32e_out).unwrap();
+        assert_eq!(le32e_out, bytes_le[..4]);
+        let mut be32e_out = Vec::new();
+        be32e.to_writer(&mut be32e_out).unwrap();
+        assert_eq!(be32e_out, bytes_be[..4]);
+        let mut le64e_out = Vec::new();
+        le64e.to_writer(&mut le64e_out).unwrap();
+        assert_eq!(le64e_out, bytes_le);
+        let mut be64e_out = Vec::new();
+        be64e.to_writer(&mut be64e_out).unwrap();
+        assert_eq!(be64e_out, bytes_be);
+    }
+
+    #[test]
+    fn test_program_header_offset() {
+        let mut bytes_le = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let mut bytes_be = &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01];
+
+        let le32o = ElfOffset::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be32o = ElfOffset::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+        let le64o = ElfOffset::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be64o = ElfOffset::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+
+        assert_eq!(le32o.0, 0x04030201);
+        assert_eq!(be32o.0, 0x08070605);
+        assert_eq!(le64o.0, 0x0807060504030201);
+        assert_eq!(be64o.0, 0x0807060504030201);
+
+        let mut le32o_out = Vec::new();
+        le32o.to_writer(&mut le32o_out).unwrap();
+        assert_eq!(le32o_out, bytes_le[..4]);
+        let mut be32o_out = Vec::new();
+        be32o.to_writer(&mut be32o_out).unwrap();
+        assert_eq!(be32o_out, bytes_be[..4]);
+        let mut le64o_out = Vec::new();
+        le64o.to_writer(&mut le64o_out).unwrap();
+        assert_eq!(le64o_out, bytes_le);
+        let mut be64o_out = Vec::new();
+        be64o.to_writer(&mut be64o_out).unwrap();
+        assert_eq!(be64o_out, bytes_be);
+    }
+
+    #[test]
+    fn test_section_header_offset() {
+        let mut bytes_le = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let mut bytes_be = &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01];
+
+        let le32o = ElfOffset::<{ ElfClass::Elf32 as u8}, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be32o = ElfOffset::<{ ElfClass::Elf32 as u8}, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+        let le64o = ElfOffset::<{ ElfClass::Elf64 as u8}, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be64o = ElfOffset::<{ ElfClass::Elf64 as u8}, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+
+        assert_eq!(le32o.0, 0x04030201);
+        assert_eq!(be32o.0, 0x08070605);
+        assert_eq!(le64o.0, 0x0807060504030201);
+        assert_eq!(be64o.0, 0x0807060504030201);
+
+        let mut le32o_out = Vec::new();
+        le32o.to_writer(&mut le32o_out).unwrap();
+        assert_eq!(le32o_out, bytes_le[..4]);
+        let mut be32o_out = Vec::new();
+        be32o.to_writer(&mut be32o_out).unwrap();
+        assert_eq!(be32o_out, bytes_be[..4]);
+        let mut le64o_out = Vec::new();
+        le64o.to_writer(&mut le64o_out).unwrap();
+        assert_eq!(le64o_out, bytes_le);
+        let mut be64o_out = Vec::new();
+        be64o.to_writer(&mut be64o_out).unwrap();
+        assert_eq!(be64o_out, bytes_be);
+    }
+
+    #[test]
+    fn test_flags() {
+        let mut bytes_le = &[0x01, 0x02, 0x03, 0x04];
+        let mut bytes_be = &[0x04, 0x03, 0x02, 0x01];
+
+        let le32f = ElfWord::<{ ElfClass::Elf32 as u8}, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be32f = ElfWord::<{ ElfClass::Elf32 as u8}, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+        let le64f = ElfWord::<{ ElfClass::Elf64 as u8}, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
+        let be64f = ElfWord::<{ ElfClass::Elf64 as u8}, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
+
+        assert_eq!(le32f.0, 0x04030201);
+        assert_eq!(be32f.0, 0x04030201);
+        assert_eq!(le64f.0, 0x04030201);
+        assert_eq!(be64f.0, 0x04030201);
+
+        let mut le32f_out = Vec::new();
+        le32f.to_writer(&mut le32f_out).unwrap();
+        assert_eq!(le32f_out, bytes_le);
+        let mut be32f_out = Vec::new();
+        be32f.to_writer(&mut be32f_out).unwrap();
+        assert_eq!(be32f_out, bytes_be);
+        let mut le64f_out = Vec::new();
+        le64f.to_writer(&mut le64f_out).unwrap();
+        assert_eq!(le64f_out, bytes_le);
+        let mut be64f_out = Vec::new();
+        be64f.to_writer(&mut be64f_out).unwrap();
+        assert_eq!(be64f_out, bytes_be);
+    }
+
+    #[test]
+    fn test_elf_header_le32() {
         let le32_id = ElfHeaderIdentifier {
             magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
             class: ElfClass::Elf32,
@@ -2348,6 +2582,7 @@ mod test {
             abi_version: ElfByte(0),
             pad: [ElfByte(0); 7],
         };
+
         let le32_hdr = ElfHeader::<
             { ElfClass::Elf32 as u8 },
             { ElfDataEncoding::LittleEndian as u8 },
@@ -2450,19 +2685,17 @@ mod test {
         };
 
         let mut le32_bytes = Vec::new();
-        le32_id
-            .to_writer(&mut std::io::Cursor::new(&mut le32_bytes))
-            .unwrap();
-        let le32_read =
-            ElfHeaderIdentifier::from_reader(&mut std::io::Cursor::new(&mut le32_bytes)).unwrap();
-        assert_eq!(le32_id, le32_read);
-        let header = ElfHeader::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(
-            &mut std::io::Cursor::new(&mut le32_bytes),
-        );
+        le32_hdr.to_writer(&mut le32_bytes).unwrap();
+        let le32_header_read = ElfHeader::<
+            { ElfClass::Elf32 as u8 },
+            { ElfDataEncoding::LittleEndian as u8 },
+        >::from_reader(&mut std::io::Cursor::new(&mut le32_bytes))
+        .unwrap();
+        assert_eq!(le32_header_read, le32_hdr);
     }
 
     #[test]
-    fn test_elf_identifier_be32() {
+    fn test_elf_header_be32() {
         let be32 = ElfHeaderIdentifier {
             magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
             class: ElfClass::Elf32,
@@ -2472,17 +2705,112 @@ mod test {
             abi_version: ElfByte(0),
             pad: [ElfByte(0); 7],
         };
+
+        let be32_hdr = ElfHeader::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }> {
+            identifier: be32.clone(),
+            r#type: ElfType::Executable,
+            machine: ElfMachine::X86_64,
+            version: ElfVersion::Current,
+            entrypoint: Some(ElfAddress::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0)),
+            program_header_offset: Some(ElfOffset::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0)),
+            section_header_offset: Some(ElfOffset::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0)),
+            flags: ElfWord::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>(0),
+            // NOTE: No extra size, ends at the section name string table index
+            header_size: ElfHalfWord::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(
+                (size_of::<ElfHeaderIdentifier>()
+                    + size_of::<
+                        ElfType<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
+                    >()
+                    + size_of::<
+                        ElfMachine<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
+                    >()
+                    + size_of::<
+                        ElfVersion<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf32 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf32 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf32 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf32 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf32 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf32 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()) as u16,
+            ),
+            program_header_entry_size: ElfHalfWord::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+            program_header_entry_count: ElfHalfWord::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+            section_header_entry_size: ElfHalfWord::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+            section_header_entry_count: ElfHalfWord::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+            section_name_string_table_index: ElfHalfWord::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+        };
+
         let mut be32_bytes = Vec::new();
-        be32.to_writer(&mut std::io::Cursor::new(&mut be32_bytes))
-            .unwrap();
-        let be32_read =
-            ElfHeaderIdentifier::from_reader(&mut std::io::Cursor::new(&mut be32_bytes)).unwrap();
-        assert_eq!(be32, be32_read);
+        be32_hdr.to_writer(&mut be32_bytes).unwrap();
+        let be32_header_read = ElfHeader::<
+            { ElfClass::Elf32 as u8 },
+            { ElfDataEncoding::BigEndian as u8 },
+        >::from_reader(&mut std::io::Cursor::new(&mut be32_bytes))
+        .unwrap();
+        assert_eq!(be32_header_read, be32_hdr);
     }
 
     #[test]
-    fn test_elf_identifier_le64() {
-        let le64 = ElfHeaderIdentifier {
+    fn test_elf_header_le64() {
+        let le64_id = ElfHeaderIdentifier {
             magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
             class: ElfClass::Elf64,
             data_encoding: ElfDataEncoding::LittleEndian,
@@ -2491,11 +2819,229 @@ mod test {
             abi_version: ElfByte(0),
             pad: [ElfByte(0); 7],
         };
+
+        let le64_hdr = ElfHeader::<
+            { ElfClass::Elf64 as u8 },
+            { ElfDataEncoding::LittleEndian as u8 },
+        > {
+            identifier: le64_id.clone(),
+            r#type: ElfType::Executable,
+            machine: ElfMachine::X86_64,
+            version: ElfVersion::Current,
+            entrypoint: Some(ElfAddress::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(0)),
+            program_header_offset: Some(ElfOffset::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(0)),
+            section_header_offset: Some(ElfOffset::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(0)),
+            flags: ElfWord::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>(0),
+            // NOTE: No extra size, ends at the section name string table index
+            header_size: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(
+                (size_of::<ElfHeaderIdentifier>()
+                    + size_of::<
+                        ElfType<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>,
+                    >()
+                    + size_of::<
+                        ElfMachine<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::LittleEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfVersion<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::LittleEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::LittleEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::LittleEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::LittleEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::LittleEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::LittleEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::LittleEndian as u8 },
+                        >,
+                    >()) as u16,
+            ),
+            program_header_entry_size: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(0),
+            program_header_entry_count: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(0),
+            section_header_entry_size: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(0),
+            section_header_entry_count: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(0),
+            section_name_string_table_index: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::LittleEndian as u8 },
+            >(0),
+        };
+
         let mut le64_bytes = Vec::new();
-        le64.to_writer(&mut std::io::Cursor::new(&mut le64_bytes))
-            .unwrap();
-        let le64_read =
-            ElfHeaderIdentifier::from_reader(&mut std::io::Cursor::new(&mut le64_bytes)).unwrap();
-        assert_eq!(le64, le64_read);
+        le64_hdr.to_writer(&mut le64_bytes).unwrap();
+        let le64_header_read = ElfHeader::<
+            { ElfClass::Elf64 as u8 },
+            { ElfDataEncoding::LittleEndian as u8 },
+        >::from_reader(&mut std::io::Cursor::new(&mut le64_bytes))
+        .unwrap();
+        assert_eq!(le64_header_read, le64_hdr);
+    }
+
+    #[test]
+    fn test_elf_header_be64() {
+        let be64 = ElfHeaderIdentifier {
+            magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
+            class: ElfClass::Elf64,
+            data_encoding: ElfDataEncoding::BigEndian,
+            version: ElfIdentifierVersion::Current,
+            os_abi: ElfOSABI::NoneSystemV,
+            abi_version: ElfByte(0),
+            pad: [ElfByte(0); 7],
+        };
+
+        let be64_hdr = ElfHeader::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }> {
+            identifier: be64.clone(),
+            r#type: ElfType::Executable,
+            machine: ElfMachine::X86_64,
+            version: ElfVersion::Current,
+            entrypoint: Some(ElfAddress::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0)),
+            program_header_offset: Some(ElfOffset::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0)),
+            section_header_offset: Some(ElfOffset::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0)),
+            flags: ElfWord::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>(0),
+            // NOTE: No extra size, ends at the section name string table index
+            header_size: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(
+                (size_of::<ElfHeaderIdentifier>()
+                    + size_of::<
+                        ElfType<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
+                    >()
+                    + size_of::<
+                        ElfMachine<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
+                    >()
+                    + size_of::<
+                        ElfVersion<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()
+                    + size_of::<
+                        ElfHalfWord<
+                            { ElfClass::Elf64 as u8 },
+                            { ElfDataEncoding::BigEndian as u8 },
+                        >,
+                    >()) as u16,
+            ),
+            program_header_entry_size: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+            program_header_entry_count: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+            section_header_entry_size: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+            section_header_entry_count: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+            section_name_string_table_index: ElfHalfWord::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0),
+        };
+
+        let mut be64_bytes = Vec::new();
+        be64_hdr.to_writer(&mut be64_bytes).unwrap();
+        let be64_header_read = ElfHeader::<
+            { ElfClass::Elf64 as u8 },
+            { ElfDataEncoding::BigEndian as u8 },
+        >::from_reader(&mut std::io::Cursor::new(&mut be64_bytes))
+        .unwrap();
+        assert_eq!(be64_header_read, be64_hdr);
     }
 }
