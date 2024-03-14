@@ -56,24 +56,49 @@ pub enum Error {
 }
 
 #[derive(Debug, Clone)]
+/// A context for an error
 pub struct ErrorContext {
+    /// The offset in the file where the error occurred
     pub offset: u64,
-    pub context: Vec<u8>
+    /// The context around the error
+    pub context: Vec<u8>,
 }
 
 impl ErrorContext {
-    pub fn from_reader<R>(reader: &mut R, offset: u64, size: usize) -> Result<Self, std::io::Error>
+    /// Read the error context from a reader at a certain offset and size
+    pub fn from_reader_at<R>(
+        reader: &mut R,
+        offset: u64,
+        size: usize,
+    ) -> Result<Self, std::io::Error>
     where
         R: Read + Seek,
     {
         let mut context = vec![0; size];
         reader.seek(std::io::SeekFrom::Start(offset))?;
-        reader.read_exact(&mut context)?;
-        Ok(ErrorContext {
-            offset,
-            context
-        })
-    
+        // Try to read exactly the size and if we fail read one less until we read nothing
+        while reader.read_exact(&mut context).is_err() {
+            context.pop();
+        }
+        Ok(ErrorContext { offset, context })
+    }
+
+    /// Read the error context from a size of a read that just errored. Unlike `from_reader_at` this
+    /// rewinds the reader to the start of the read instead of seeking to the offset directly.
+    pub fn from_reader<R>(reader: &mut R, size: usize) -> Result<Self, std::io::Error>
+    where
+        R: Read + Seek,
+    {
+        let offset = reader.stream_position()?;
+        let begin = offset.saturating_sub(size as u64);
+        Self::from_reader_at(reader, begin, size)
+    }
+}
+
+impl Display for ErrorContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "offset: {:#x}, context: {:?}", self.offset, self.context)
+    }
 }
 
 /// Decode an owned instance of a type from a reader
