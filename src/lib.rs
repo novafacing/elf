@@ -280,6 +280,7 @@ pub type RawElf64Section = u16;
 /// Raw representation of a version symbol in an ELF class 64 file
 pub type RawElf64VersionSymbol = u16;
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// A byte in an ELF file. Always represented as a single byte.
 pub struct ElfByte(u8);
@@ -315,6 +316,7 @@ impl Display for ElfByte {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// A half-word in an ELF file. Represented as 16 bits for both classes.
 pub struct ElfHalfWord<const EC: u8, const ED: u8>(pub RawElf64HalfWord);
@@ -386,6 +388,7 @@ impl<const EC: u8, const ED: u8> Display for ElfHalfWord<EC, ED> {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// A word in an ELF file. Always represented as 32 bits for both classes.
 ///
@@ -458,6 +461,7 @@ impl<const EC: u8, const ED: u8> Display for ElfWord<EC, ED> {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// A signed word in an ELF file. Represented as 32 bits for both classes.
 pub struct ElfSignedWord<const EC: u8, const ED: u8>(pub RawElf64SignedWord);
@@ -533,6 +537,7 @@ impl<const EC: u8, const ED: u8> Display for ElfSignedWord<EC, ED> {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// An extended word in an ELF file. Represented as 64 bits for both classes.
 pub struct ElfExtendedWord<const EC: u8, const ED: u8>(pub u64);
@@ -608,6 +613,7 @@ impl<const EC: u8, const ED: u8> Display for ElfExtendedWord<EC, ED> {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// A signed extended word in an ELF file. Represented as 64 bits for both classes.
 pub struct ElfSignedExtendedWord<const EC: u8, const ED: u8>(pub i64);
@@ -682,6 +688,7 @@ impl<const EC: u8, const ED: u8> Display for ElfSignedExtendedWord<EC, ED> {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// An address in an ELF file. Represented as 32 bits for class 32 and 64 bits for class 64.
 pub struct ElfAddress<const EC: u8, const ED: u8>(pub u64);
@@ -774,6 +781,7 @@ impl<const EC: u8, const ED: u8> Display for ElfAddress<EC, ED> {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// An offset in an ELF file. Represented as 32 bits for class 32 and 64 bits for class 64.
 pub struct ElfOffset<const EC: u8, const ED: u8>(pub u64);
@@ -866,6 +874,7 @@ impl<const EC: u8, const ED: u8> Display for ElfOffset<EC, ED> {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// A section index in an ELF file. Represented as 16 bits for both classes.
 pub struct ElfSection<const EC: u8, const ED: u8>(pub u16);
@@ -936,6 +945,7 @@ impl<const EC: u8, const ED: u8> Display for ElfSection<EC, ED> {
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// A version symbol in an ELF file. Represented as 16 bits for both classes.
 pub struct ElfVersionSymbol<const EC: u8, const ED: u8>(pub u16);
@@ -1947,6 +1957,7 @@ where
     }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The header for an ELF object. Resides at the beginning and holds a ``road map''
 /// describing the file's organization
@@ -2002,6 +2013,29 @@ pub struct ElfHeader<const EC: u8, const ED: u8> {
     /// contained in the sh_link field of the section header at index 0.  (Otherwise, the
     /// sh_link member of the initial entry contains 0.)
     pub section_name_string_table_index: ElfHalfWord<EC, ED>,
+    /// Extra data in the elf header. The contents of this data are not specified by the ELF
+    /// specification, but extra data may be part of the header as specified by
+    /// `header_size`. The size of this data is equal to the `header_size` minus the size of
+    /// the preceding fields.
+    pub data: Vec<ElfByte>,
+}
+
+impl<const EC: u8, const ED: u8> ElfHeader<EC, ED> {
+    /// The size of the ELF header structure in bytes, less the size of the `data` field
+    pub const SIZE: usize = size_of::<ElfHeaderIdentifier>()
+        + size_of::<ElfType<EC, ED>>()
+        + size_of::<ElfMachine<EC, ED>>()
+        + size_of::<ElfVersion<EC, ED>>()
+        + size_of::<ElfAddress<EC, ED>>()
+        + size_of::<ElfOffset<EC, ED>>()
+        + size_of::<ElfOffset<EC, ED>>()
+        + size_of::<ElfWord<EC, ED>>()
+        + size_of::<ElfHalfWord<EC, ED>>()
+        + size_of::<ElfHalfWord<EC, ED>>()
+        + size_of::<ElfHalfWord<EC, ED>>()
+        + size_of::<ElfHalfWord<EC, ED>>()
+        + size_of::<ElfHalfWord<EC, ED>>()
+        + size_of::<ElfHalfWord<EC, ED>>();
 }
 
 impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfHeader<EC, ED>
@@ -2011,21 +2045,44 @@ where
     type Error = Error;
 
     fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        let identifier = ElfHeaderIdentifier::from_reader(reader)?;
+        let r#type = ElfType::<EC, ED>::from_reader(reader)?;
+        let machine = ElfMachine::<EC, ED>::from_reader(reader)?;
+        let version = ElfVersion::<EC, ED>::from_reader(reader)?;
+        let entrypoint = ElfAddress::<EC, ED>::from_reader(reader).ok();
+        let program_header_offset = ElfOffset::<EC, ED>::from_reader(reader).ok();
+        let section_header_offset = ElfOffset::<EC, ED>::from_reader(reader).ok();
+        let flags = ElfWord::<EC, ED>::from_reader(reader)?;
+        let header_size = ElfHalfWord::<EC, ED>::from_reader(reader)?;
+        let program_header_entry_size = ElfHalfWord::<EC, ED>::from_reader(reader)?;
+        let program_header_entry_count = ElfHalfWord::<EC, ED>::from_reader(reader)?;
+        let section_header_entry_size = ElfHalfWord::<EC, ED>::from_reader(reader)?;
+        let section_header_entry_count = ElfHalfWord::<EC, ED>::from_reader(reader)?;
+        let section_name_string_table_index = ElfHalfWord::<EC, ED>::from_reader(reader)?;
+
+        let data = {
+            let mut data = vec![ElfByte(0); header_size.0 as usize - Self::SIZE];
+            data.iter_mut()
+                .try_for_each(|b| ElfByte::from_reader(reader).map(|r| *b = r))?;
+            data
+        };
+
         Ok(Self {
-            identifier: ElfHeaderIdentifier::from_reader(reader)?,
-            r#type: ElfType::<EC, ED>::from_reader(reader)?,
-            machine: ElfMachine::<EC, ED>::from_reader(reader)?,
-            version: ElfVersion::<EC, ED>::from_reader(reader)?,
-            entrypoint: ElfAddress::<EC, ED>::from_reader(reader).ok(),
-            program_header_offset: ElfOffset::<EC, ED>::from_reader(reader).ok(),
-            section_header_offset: ElfOffset::<EC, ED>::from_reader(reader).ok(),
-            flags: ElfWord::<EC, ED>::from_reader(reader)?,
-            header_size: ElfHalfWord::<EC, ED>::from_reader(reader)?,
-            program_header_entry_size: ElfHalfWord::<EC, ED>::from_reader(reader)?,
-            program_header_entry_count: ElfHalfWord::<EC, ED>::from_reader(reader)?,
-            section_header_entry_size: ElfHalfWord::<EC, ED>::from_reader(reader)?,
-            section_header_entry_count: ElfHalfWord::<EC, ED>::from_reader(reader)?,
-            section_name_string_table_index: ElfHalfWord::<EC, ED>::from_reader(reader)?,
+            identifier,
+            r#type,
+            machine,
+            version,
+            entrypoint,
+            program_header_offset,
+            section_header_offset,
+            flags,
+            header_size,
+            program_header_entry_size,
+            program_header_entry_count,
+            section_header_entry_size,
+            section_header_entry_count,
+            section_name_string_table_index,
+            data,
         })
     }
 }
@@ -2071,6 +2128,104 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_size() {
+        assert_eq!(size_of::<Elf32LEHalfWord>(), 2);
+        assert_eq!(size_of::<Elf32BEHalfWord>(), 2);
+        assert_eq!(size_of::<Elf64LEHalfWord>(), 2);
+        assert_eq!(size_of::<Elf64BEHalfWord>(), 2);
+        assert_eq!(size_of::<Elf32LEWord>(), 4);
+        assert_eq!(size_of::<Elf32BEWord>(), 4);
+        assert_eq!(size_of::<Elf64LEWord>(), 4);
+        assert_eq!(size_of::<Elf64BEWord>(), 4);
+        assert_eq!(size_of::<Elf32LEExtendedWord>(), 8);
+        assert_eq!(size_of::<Elf32BEExtendedWord>(), 8);
+        assert_eq!(size_of::<Elf64LEExtendedWord>(), 8);
+        assert_eq!(size_of::<Elf64BEExtendedWord>(), 8);
+        assert_eq!(size_of::<Elf32LESignedWord>(), 4);
+        assert_eq!(size_of::<Elf32BESignedWord>(), 4);
+        assert_eq!(size_of::<Elf64LESignedWord>(), 4);
+        assert_eq!(size_of::<Elf64BESignedWord>(), 4);
+        assert_eq!(size_of::<Elf32LESignedExtendedWord>(), 8);
+        assert_eq!(size_of::<Elf32BESignedExtendedWord>(), 8);
+        assert_eq!(size_of::<Elf64LESignedExtendedWord>(), 8);
+        assert_eq!(size_of::<Elf64BESignedExtendedWord>(), 8);
+        assert_eq!(size_of::<Elf32LEAddress>(), 4);
+        assert_eq!(size_of::<Elf32BEAddress>(), 4);
+        assert_eq!(size_of::<Elf64LEAddress>(), 8);
+        assert_eq!(size_of::<Elf64BEAddress>(), 8);
+        assert_eq!(size_of::<Elf32LEOffset>(), 4);
+        assert_eq!(size_of::<Elf32BEOffset>(), 4);
+        assert_eq!(size_of::<Elf64LEOffset>(), 8);
+        assert_eq!(size_of::<Elf64BEOffset>(), 8);
+        assert_eq!(size_of::<Elf32LESection>(), 2);
+        assert_eq!(size_of::<Elf32BESection>(), 2);
+        assert_eq!(size_of::<Elf64LESection>(), 2);
+        assert_eq!(size_of::<Elf64BESection>(), 2);
+        assert_eq!(size_of::<Elf32LEVersionSymbol>(), 2);
+        assert_eq!(size_of::<Elf32BEVersionSymbol>(), 2);
+        assert_eq!(size_of::<Elf64LEVersionSymbol>(), 2);
+        assert_eq!(size_of::<Elf64BEVersionSymbol>(), 2);
+        assert_eq!(
+            size_of::<ElfType<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
+            ),
+            size_of::<Elf32LEHalfWord>()
+        );
+        assert_eq!(
+            size_of::<ElfType<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(),
+            size_of::<Elf32BEHalfWord>()
+        );
+        assert_eq!(
+            size_of::<ElfType<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
+            ),
+            size_of::<Elf64LEHalfWord>()
+        );
+        assert_eq!(
+            size_of::<ElfType<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(),
+            size_of::<Elf64BEHalfWord>()
+        );
+        assert_eq!(
+            size_of::<ElfMachine<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
+            ),
+            size_of::<Elf32LEHalfWord>()
+        );
+        assert_eq!(
+            size_of::<ElfMachine<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(
+            ),
+            size_of::<Elf32BEHalfWord>()
+        );
+        assert_eq!(
+            size_of::<ElfMachine<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
+            ),
+            size_of::<Elf64LEHalfWord>()
+        );
+        assert_eq!(
+            size_of::<ElfMachine<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(
+            ),
+            size_of::<Elf64BEHalfWord>()
+        );
+        assert_eq!(
+            size_of::<ElfVersion<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
+            ),
+            size_of::<Elf32LEWord>()
+        );
+        assert_eq!(
+            size_of::<ElfVersion<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(
+            ),
+            size_of::<Elf32BEWord>()
+        );
+        assert_eq!(
+            size_of::<ElfVersion<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
+            ),
+            size_of::<Elf64LEWord>()
+        );
+        assert_eq!(
+            size_of::<ElfVersion<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(
+            ),
+            size_of::<Elf64BEWord>()
+        );
+    }
 
     #[test]
     fn test_elf_half_word() {
@@ -2682,6 +2837,7 @@ mod test {
                 { ElfClass::Elf32 as u8 },
                 { ElfDataEncoding::LittleEndian as u8 },
             >(0),
+            data: vec![],
         };
 
         let mut le32_bytes = Vec::new();
@@ -2796,6 +2952,7 @@ mod test {
                 { ElfClass::Elf32 as u8 },
                 { ElfDataEncoding::BigEndian as u8 },
             >(0),
+            data: vec![],
         };
 
         let mut be32_bytes = Vec::new();
@@ -2919,6 +3076,7 @@ mod test {
                 { ElfClass::Elf64 as u8 },
                 { ElfDataEncoding::LittleEndian as u8 },
             >(0),
+            data: vec![],
         };
 
         let mut le64_bytes = Vec::new();
@@ -3033,6 +3191,7 @@ mod test {
                 { ElfClass::Elf64 as u8 },
                 { ElfDataEncoding::BigEndian as u8 },
             >(0),
+            data: vec![],
         };
 
         let mut be64_bytes = Vec::new();
