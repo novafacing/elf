@@ -2,14 +2,21 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::FromPrimitive;
+use error::Error;
+use header::elf::{
+    identification::{ElfClass, ElfDataEncoding, ElfHeaderIdentifier},
+    ElfHeader,
+};
 use std::{
-    fmt::Display,
-    io::{Read, Seek, Write},
-    mem::size_of,
+    collections::HashSet,
+    io::{Read, Seek, SeekFrom, Write},
 };
 use typed_builder::TypedBuilder;
+
+pub mod arch;
+pub mod base;
+pub mod error;
+pub mod header;
 
 #[macro_export]
 /// Add the ability to convert a primitive to an enum
@@ -53,168 +60,6 @@ macro_rules! from_primitive {
     };
 }
 
-#[derive(thiserror::Error, Debug)]
-/// Error type for errors during ELF object handling
-pub enum Error {
-    #[error(transparent)]
-    /// Error from IO operations
-    Io(#[from] std::io::Error),
-    #[error("Invalid ELF class {class}")]
-    /// Invalid ELF class value
-    InvalidClass {
-        /// The value that could not be interpreted as a class value
-        class: ElfByte,
-    },
-    #[error("Invalid ELF data encoding {encoding}")]
-    /// Invalid ELF data encoding value
-    InvalidDataEncoding {
-        /// The value that could not be interpreted as a data encoding value
-        encoding: ElfByte,
-    },
-    #[error("Invalid ELF identifier version {version}")]
-    /// Invalid ELF version value
-    InvalidIdentifierVersion {
-        /// The value that could not be interpreted as a version value
-        version: ElfByte,
-    },
-    #[error("Invalid ELF OS ABI {os_abi}")]
-    /// Invalid ELF OS ABI value
-    InvalidOsAbi {
-        /// The value that could not be interpreted as an OS ABI value
-        os_abi: ElfByte,
-    },
-    #[error("Invalid ELF ABI version {version}")]
-    /// Invalid ELF ABI version value
-    InvalidAbiVersion {
-        /// The value that could not be interpreted as an ABI version value
-        version: ElfByte,
-    },
-    #[error("Invalid ELF type {context}")]
-    /// Invalid ELF type value
-    InvalidType {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF machine {context}")]
-    /// Invalid ELF machine value
-    InvalidMachine {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF version {context}")]
-    /// Invalid ELF version value
-    InvalidVersion {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF entry point {context}")]
-    /// Invalid ELF entry point value
-    InvalidEntryPoint {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF program header offset {context}")]
-    /// Invalid ELF program header offset value
-    InvalidProgramHeaderOffset {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF section header offset {context}")]
-    /// Invalid ELF section header offset value
-    InvalidSectionHeaderOffset {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF flags {context}")]
-    /// Invalid ELF flags value
-    InvalidFlags {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF header size {context}")]
-    /// Invalid ELF header size value
-    InvalidHeaderSize {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF program header table entry size {context}")]
-    /// Invalid ELF program header table entry size value
-    InvalidProgramHeaderTableEntrySize {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF program header table entry count {context}")]
-    /// Invalid ELF program header table entry count value
-    InvalidProgramHeaderTableEntryCount {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF section header table entry size {context}")]
-    /// Invalid ELF section header table entry size value
-    InvalidSectionHeaderTableEntrySize {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF section header table entry count {context}")]
-    /// Invalid ELF section header table entry count value
-    InvalidSectionHeaderTableEntryCount {
-        /// The decoding context
-        context: ErrorContext,
-    },
-    #[error("Invalid ELF section header string table index {context}")]
-    /// Invalid ELF section header string table index value
-    InvalidSectionHeaderStringTableIndex {
-        /// The decoding context
-        context: ErrorContext,
-    },
-}
-
-#[derive(Debug, Clone)]
-/// A context for an error
-pub struct ErrorContext {
-    /// The offset in the file where the error occurred
-    pub offset: u64,
-    /// The context around the error
-    pub context: Vec<u8>,
-}
-
-impl ErrorContext {
-    /// Read the error context from a reader at a certain offset and size
-    pub fn from_reader_at<R>(
-        reader: &mut R,
-        offset: u64,
-        size: usize,
-    ) -> Result<Self, std::io::Error>
-    where
-        R: Read + Seek,
-    {
-        let mut context = vec![0; size];
-        reader.seek(std::io::SeekFrom::Start(offset))?;
-        // Try to read exactly the size and if we fail read one less until we read nothing
-        while reader.read_exact(&mut context).is_err() {
-            context.pop();
-        }
-        Ok(ErrorContext { offset, context })
-    }
-
-    /// Read the error context from a size of a read that just errored. Unlike `from_reader_at` this
-    /// rewinds the reader to the start of the read instead of seeking to the offset directly.
-    pub fn from_reader<R>(reader: &mut R, size: usize) -> Result<Self, std::io::Error>
-    where
-        R: Read + Seek,
-    {
-        let offset = reader.stream_position()?;
-        let begin = offset.saturating_sub(size as u64);
-        Self::from_reader_at(reader, begin, size)
-    }
-}
-
-impl Display for ErrorContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "offset: {:#x}, context: {:?}", self.offset, self.context)
-    }
-}
-
 /// Decode an owned instance of a type from a reader
 pub trait FromReader<R>
 where
@@ -225,7 +70,12 @@ where
     type Error;
 
     /// Decode an instance of this type from a reader
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error>;
+    fn from_reader_with(reader: &mut R, config: &mut Config) -> Result<Self, Self::Error>;
+
+    /// Decode an instance of this type from a reader
+    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+        Self::from_reader_with(reader, &mut Config::default())
+    }
 }
 
 /// Encode an instance of a type to a writer
@@ -241,2966 +91,1385 @@ where
     fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error>;
 }
 
-/// Raw representation of a byte in an ELF file
-pub type RawElfByte = u8;
-/// Raw representation of a half-word in an ELF class 32 file
-pub type RawElf32HalfWord = u16;
-/// Raw representation of a word in an ELF class 32 file
-pub type RawElf32Word = u32;
-/// Raw representation of a signed word in an ELF class 32 file
-pub type RawElf32SignedWord = i32;
-/// Raw representation of an extended word in an ELF class 32 file
-pub type RawElf32ExtendedWord = u64;
-/// Raw representation of a signed extended word in an ELF class 32 file
-pub type RawElf32SignedExtendedWord = i64;
-/// Raw representation of an address in an ELF class 32 file
-pub type RawElf32Address = u32;
-/// Raw representation of an offset in an ELF class 32 file
-pub type RawElf32Offset = u32;
-/// Raw representation of a section index in an ELF class 32 file
-pub type RawElf32Section = u16;
-/// Raw representation of a version symbol in an ELF class 32 file
-pub type RawElf32VersionSymbol = u16;
-/// Raw representation of a half-word in an ELF class 64 file
-pub type RawElf64HalfWord = u16;
-/// Raw representation of a word in an ELF class 64 file
-pub type RawElf64Word = u32;
-/// Raw representation of a signed word in an ELF class 64 file
-pub type RawElf64SignedWord = i32;
-/// Raw representation of an extended word in an ELF class 64 file
-pub type RawElf64ExtendedWord = u64;
-/// Raw representation of a signed extended word in an ELF class 64 file
-pub type RawElf64SignedExtendedWord = i64;
-/// Raw representation of an address in an ELF class 64 file
-pub type RawElf64Address = u64;
-/// Raw representation of an offset in an ELF class 64 file
-pub type RawElf64Offset = u64;
-/// Raw representation of a section index in an ELF class 64 file
-pub type RawElf64Section = u16;
-/// Raw representation of a version symbol in an ELF class 64 file
-pub type RawElf64VersionSymbol = u16;
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// A byte in an ELF file. Always represented as a single byte.
-pub struct ElfByte(u8);
-
-impl<R> FromReader<R> for ElfByte
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let mut buf = [0; size_of::<RawElfByte>()];
-        reader.read_exact(&mut buf)?;
-        Ok(ElfByte(buf[0]))
-    }
+/// A type which always has a known size when written to a writer
+pub trait HasWrittenSize {
+    /// The size when written
+    const SIZE: usize;
 }
 
-impl<W> ToWriter<W> for ElfByte
-where
-    W: Write,
-{
-    type Error = Error;
+/// Attempt to convert a value from one type to another type, possibly
+/// fallibly, and use a configuration
+pub trait TryFromWithConfig<T>: Sized {
+    /// The error type
+    type Error;
 
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        writer.write_all(&[self.0])?;
-        Ok(())
-    }
+    /// Try to convert from value with `config`
+    fn try_from_with(value: T, config: &mut Config) -> Result<Self, Self::Error>;
 }
 
-impl Display for ElfByte {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
+#[derive(Debug, Default, TypedBuilder)]
+/// A configuration for the object file handler. Primarily configures errors which should
+/// be ignored.
+pub struct Config {
+    #[builder(default = ElfClass::default())]
+    /// The default class to use if no valid class is found
+    default_class: ElfClass,
+    #[builder(default = ElfDataEncoding::default())]
+    /// The default data encoding to use if no valid class is found
+    default_encoding: ElfDataEncoding,
+    #[builder(setter(into))]
+    /// Ignored errors. Each error is handled somewhat differently when it is ignored,
+    /// and the implementation for each is located where the error would have been raised.
+    /// For example, an invalid data encoding may be inferred from the machine field.
+    ignore: HashSet<Error>,
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// A half-word in an ELF file. Represented as 16 bits for both classes.
-pub struct ElfHalfWord<const EC: u8, const ED: u8>(pub RawElf64HalfWord);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfHalfWord<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64HalfWord>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfHalfWord::<EC, ED>(RawElf64HalfWord::from_le_bytes(buf)))
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64HalfWord>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfHalfWord::<EC, ED>(RawElf64HalfWord::from_be_bytes(buf)))
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfHalfWord<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<const EC: u8, const ED: u8> Display for ElfHalfWord<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// A word in an ELF file. Always represented as 32 bits for both classes.
-///
-pub struct ElfWord<const EC: u8, const ED: u8>(pub RawElf64Word);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfWord<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64Word>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfWord::<EC, ED>(RawElf64Word::from_le_bytes(buf)))
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64Word>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfWord::<EC, ED>(RawElf64Word::from_be_bytes(buf)))
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfWord<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<const EC: u8, const ED: u8> Display for ElfWord<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// A signed word in an ELF file. Represented as 32 bits for both classes.
-pub struct ElfSignedWord<const EC: u8, const ED: u8>(pub RawElf64SignedWord);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfSignedWord<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64SignedWord>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfSignedWord::<EC, ED>(RawElf64SignedWord::from_le_bytes(
-                    buf,
-                )))
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64SignedWord>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfSignedWord::<EC, ED>(RawElf64SignedWord::from_be_bytes(
-                    buf,
-                )))
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfSignedWord<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<const EC: u8, const ED: u8> Display for ElfSignedWord<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// An extended word in an ELF file. Represented as 64 bits for both classes.
-pub struct ElfExtendedWord<const EC: u8, const ED: u8>(pub u64);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfExtendedWord<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64ExtendedWord>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfExtendedWord::<EC, ED>(
-                    RawElf64ExtendedWord::from_le_bytes(buf),
-                ))
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64ExtendedWord>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfExtendedWord::<EC, ED>(
-                    RawElf64ExtendedWord::from_be_bytes(buf),
-                ))
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfExtendedWord<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<const EC: u8, const ED: u8> Display for ElfExtendedWord<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// A signed extended word in an ELF file. Represented as 64 bits for both classes.
-pub struct ElfSignedExtendedWord<const EC: u8, const ED: u8>(pub i64);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfSignedExtendedWord<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64SignedExtendedWord>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfSignedExtendedWord::<EC, ED>(
-                    RawElf64SignedExtendedWord::from_le_bytes(buf),
-                ))
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64SignedExtendedWord>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfSignedExtendedWord::<EC, ED>(
-                    RawElf64SignedExtendedWord::from_be_bytes(buf),
-                ))
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfSignedExtendedWord<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<const EC: u8, const ED: u8> Display for ElfSignedExtendedWord<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// An address in an ELF file. Represented as 32 bits for class 32 and 64 bits for class 64.
-pub struct ElfAddress<const EC: u8, const ED: u8>(pub u64);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfAddress<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
+impl Config {
+    pub(crate) fn default_elf_kind<R>(&mut self, reader: &mut R) -> Result<ElfKind, Error>
+    where
+        R: Read + Seek,
+    {
+        match (self.default_class, self.default_encoding) {
             (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf32Address>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfAddress::<EC, ED>(
-                    RawElf32Address::from_le_bytes(buf) as u64
-                ))
+                Ok(ElfKind::Elf32LE(Elf::<
+                    { ElfClass::ELF_CLASS_32 },
+                    { ElfDataEncoding::ELF_DATA_ENCODING_LITTLE_ENDIAN },
+                >::from_reader_with(
+                    reader, self
+                )?))
             }
             (ElfClass::Elf32, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf32Address>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfAddress::<EC, ED>(
-                    RawElf32Address::from_be_bytes(buf) as u64
-                ))
+                Ok(ElfKind::Elf32LE(Elf::<
+                    { ElfClass::ELF_CLASS_32 },
+                    { ElfDataEncoding::ELF_DATA_ENCODING_LITTLE_ENDIAN },
+                >::from_reader_with(
+                    reader, self
+                )?))
             }
             (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64Address>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfAddress::<EC, ED>(RawElf64Address::from_le_bytes(buf)))
+                Ok(ElfKind::Elf32LE(Elf::<
+                    { ElfClass::ELF_CLASS_32 },
+                    { ElfDataEncoding::ELF_DATA_ENCODING_LITTLE_ENDIAN },
+                >::from_reader_with(
+                    reader, self
+                )?))
             }
             (ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64Address>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfAddress::<EC, ED>(RawElf64Address::from_be_bytes(buf)))
+                Ok(ElfKind::Elf32LE(Elf::<
+                    { ElfClass::ELF_CLASS_32 },
+                    { ElfDataEncoding::ELF_DATA_ENCODING_LITTLE_ENDIAN },
+                >::from_reader_with(
+                    reader, self
+                )?))
             }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
+            (c, e) => Err(Error::InvalidClassEncodingPair {
+                class: c,
+                encoding: e,
+            }),
         }
     }
 }
 
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfAddress<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&(self.0 as u32).to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&(self.0 as u32).to_be_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
+#[derive(Debug, Clone)]
+/// An ELF object file
+pub struct Elf<const EC: u8, const ED: u8> {
+    header: ElfHeader<EC, ED>,
 }
 
-impl<const EC: u8, const ED: u8> Display for ElfAddress<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// An offset in an ELF file. Represented as 32 bits for class 32 and 64 bits for class 64.
-pub struct ElfOffset<const EC: u8, const ED: u8>(pub u64);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfOffset<EC, ED>
+impl<R, const EC: u8, const ED: u8> FromReader<R> for Elf<EC, ED>
 where
     R: Read + Seek,
 {
     type Error = Error;
 
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf32Offset>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfOffset::<EC, ED>(
-                    RawElf32Offset::from_le_bytes(buf) as u64
-                ))
-            }
-            (ElfClass::Elf32, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf32Offset>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfOffset::<EC, ED>(
-                    RawElf32Offset::from_be_bytes(buf) as u64
-                ))
-            }
-            (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64Offset>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfOffset::<EC, ED>(RawElf64Offset::from_le_bytes(buf)))
-            }
-            (ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64Offset>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfOffset::<EC, ED>(RawElf64Offset::from_be_bytes(buf)))
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfOffset<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&(self.0 as u32).to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&(self.0 as u32).to_be_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<const EC: u8, const ED: u8> Display for ElfOffset<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// A section index in an ELF file. Represented as 16 bits for both classes.
-pub struct ElfSection<const EC: u8, const ED: u8>(pub u16);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfSection<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64Section>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfSection::<EC, ED>(RawElf64Section::from_le_bytes(buf)))
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64Section>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfSection::<EC, ED>(RawElf64Section::from_be_bytes(buf)))
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfSection<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<const EC: u8, const ED: u8> Display for ElfSection<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// A version symbol in an ELF file. Represented as 16 bits for both classes.
-pub struct ElfVersionSymbol<const EC: u8, const ED: u8>(pub u16);
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfVersionSymbol<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                let mut buf = [0; size_of::<RawElf64VersionSymbol>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfVersionSymbol::<EC, ED>(
-                    RawElf64VersionSymbol::from_le_bytes(buf),
-                ))
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                let mut buf = [0; size_of::<RawElf64VersionSymbol>()];
-                reader.read_exact(&mut buf)?;
-                Ok(ElfVersionSymbol::<EC, ED>(
-                    RawElf64VersionSymbol::from_be_bytes(buf),
-                ))
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfVersionSymbol<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        let Some(class) = ElfClass::from_u8(EC) else {
-            return Err(Error::InvalidClass { class: ElfByte(EC) });
-        };
-        let Some(data_encoding) = ElfDataEncoding::from_u8(ED) else {
-            return Err(Error::InvalidDataEncoding {
-                encoding: ElfByte(ED),
-            });
-        };
-        match (class, data_encoding) {
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
-                writer.write_all(&self.0.to_le_bytes())?;
-                Ok(())
-            }
-            (ElfClass::Elf32 | ElfClass::Elf64, ElfDataEncoding::BigEndian) => {
-                writer.write_all(&self.0.to_be_bytes())?;
-                Ok(())
-            }
-            (_, _) => Err(Error::InvalidClass { class: ElfByte(EC) }),
-        }
-    }
-}
-
-impl<const EC: u8, const ED: u8> Display for ElfVersionSymbol<EC, ED> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-/// 32-bit little-endian half word
-pub type Elf32LEHalfWord =
-    ElfHalfWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit little-endian word
-pub type Elf32LEWord = ElfWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit little-endian signed word
-pub type Elf32LESignedWord =
-    ElfSignedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit little-endian extended word
-pub type Elf32LEExtendedWord =
-    ElfExtendedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit little-endian signed extended word
-pub type Elf32LESignedExtendedWord =
-    ElfSignedExtendedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit little-endian address
-pub type Elf32LEAddress =
-    ElfAddress<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit little-endian offset
-pub type Elf32LEOffset =
-    ElfOffset<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit little-endian section
-pub type Elf32LESection =
-    ElfSection<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit little-endian version symbol
-pub type Elf32LEVersionSymbol =
-    ElfVersionSymbol<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 32-bit big-endian half word
-pub type Elf32BEHalfWord =
-    ElfHalfWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 32-bit big-endian word
-pub type Elf32BEWord = ElfWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 32-bit big-endian signed word
-pub type Elf32BESignedWord =
-    ElfSignedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 32-bit big-endian extended word
-pub type Elf32BEExtendedWord =
-    ElfExtendedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 32-bit big-endian signed extended word
-pub type Elf32BESignedExtendedWord =
-    ElfSignedExtendedWord<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 32-bit big-endian address
-pub type Elf32BEAddress =
-    ElfAddress<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 32-bit big-endian offset
-pub type Elf32BEOffset = ElfOffset<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 32-bit big-endian section
-pub type Elf32BESection =
-    ElfSection<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 32-bit big-endian version symbol
-pub type Elf32BEVersionSymbol =
-    ElfVersionSymbol<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit little-endian half word
-pub type Elf64LEHalfWord =
-    ElfHalfWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit little-endian word
-pub type Elf64LEWord = ElfWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit little-endian signed word
-pub type Elf64LESignedWord =
-    ElfSignedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit little-endian extended word
-pub type Elf64LEExtendedWord =
-    ElfExtendedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit little-endian signed extended word
-pub type Elf64LESignedExtendedWord =
-    ElfSignedExtendedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit little-endian address
-pub type Elf64LEAddress =
-    ElfAddress<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit little-endian offset
-pub type Elf64LEOffset =
-    ElfOffset<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit little-endian section
-pub type Elf64LESection =
-    ElfSection<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit little-endian version symbol
-pub type Elf64LEVersionSymbol =
-    ElfVersionSymbol<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>;
-/// 64-bit big-endian half word
-pub type Elf64BEHalfWord =
-    ElfHalfWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit big-endian word
-pub type Elf64BEWord = ElfWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit big-endian signed word
-pub type Elf64BESignedWord =
-    ElfSignedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit big-endian extended word
-pub type Elf64BEExtendedWord =
-    ElfExtendedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit big-endian signed extended word
-pub type Elf64BESignedExtendedWord =
-    ElfSignedExtendedWord<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit big-endian address
-pub type Elf64BEAddress =
-    ElfAddress<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit big-endian offset
-pub type Elf64BEOffset = ElfOffset<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit big-endian section
-pub type Elf64BESection =
-    ElfSection<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-/// 64-bit big-endian version symbol
-pub type Elf64BEVersionSymbol =
-    ElfVersionSymbol<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>;
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-#[non_exhaustive]
-/// The file's class/capacity, i.e. whether it is 32-bit or 64-bit.
-///
-/// A file's data encoding and class specifies how to interpret the basic objects in a
-/// file. Class ELFCLASS32 files use objects that occupy 1, 2, and 4 bytes. Class
-/// ELFCLASS64 files use objects that occupy 1, 2, 4, and 8 bytes. Under the defined
-/// encodings, objects are represented as shown below.
-pub enum ElfClass {
-    /// Unspecified (TODO: Make a best guess based on the file's contents)
-    ///
-    /// NOTE: It does not have to be a hard error to have a file with an unspecified
-    /// class, but the decoder will rely on a best guess based on the file's contents
-    /// which may not be accurate.
-    None = 0,
-    /// 32-bit
-    Elf32 = 1,
-    /// 64-bit
-    Elf64 = 2,
-}
-
-impl<R> FromReader<R> for ElfClass
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let class = ElfByte::from_reader(reader)?;
-        Self::from_u8(class.0).ok_or_else(|| Error::InvalidClass { class })
-    }
-}
-
-impl<W> ToWriter<W> for ElfClass
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        ElfByte(*self as u8).to_writer(writer)
-    }
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-#[non_exhaustive]
-/// The file's data encoding, i.e. whether it is little-endian or big-endian.
-///
-/// A file's data encoding and class specifies how to interpret the basic objects in a
-/// file. Encoding ELFDATA2LSB specifies 2's complement values, with the least
-/// significant byte occupying the lowest address.
-pub enum ElfDataEncoding {
-    /// Unspecified or invalid data encoding (TODO: Make a best guess based on the
-    /// file's contents)
-    ///
-    /// NOTE: It does not have to be a hard error to have a file with an unspecified
-    /// data encoding, but the decoder will rely on a best guess based on the file's
-    /// contents which may not be accurate.
-    None = 0,
-    /// Little-endian
-    LittleEndian = 1,
-    /// Big-endian
-    BigEndian = 2,
-}
-
-impl<R> FromReader<R> for ElfDataEncoding
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let encoding = ElfByte::from_reader(reader)?;
-        Self::from_u8(encoding.0).ok_or_else(|| Error::InvalidDataEncoding { encoding })
-    }
-}
-
-impl<W> ToWriter<W> for ElfDataEncoding
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        ElfByte(*self as u8).to_writer(writer)
-    }
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-#[non_exhaustive]
-/// The file's version
-pub enum ElfIdentifierVersion {
-    /// Unspecified or invalid version
-    ///
-    /// NOTE: It is not a hard error to have an unspecified or invalid version,
-    /// and this field can be effectively ignored if desired.
-    None = 0,
-    /// Current version
-    Current = 1,
-}
-
-impl<R> FromReader<R> for ElfIdentifierVersion
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let version = ElfByte::from_reader(reader)?;
-        Self::from_u8(version.0).ok_or_else(|| Error::InvalidIdentifierVersion { version })
-    }
-}
-
-impl<W> ToWriter<W> for ElfIdentifierVersion
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        ElfByte(*self as u8).to_writer(writer)
-    }
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-#[non_exhaustive]
-/// The file's OS/ABI
-///
-/// Identifies the OS- or ABI-specific ELF extensions used by this file. Some fields in
-/// other ELF structures have ﬂags and values that have operating system and/or ABI
-/// specific meanings; the interpretation of those fields is determined by the value of
-/// this byte. If the object file does not use any extensions, it is recommended that
-/// this byte be set to 0. If the value for this byte is 64 through 255, its meaning
-/// depends on the value of the machine header member. The ABI processor supplement
-/// for an architecture can define its own associated set of values for this byte in this
-/// range. If the processor supplement does not specify a set of values, one of the
-/// following values shall be used, where 0 can also be taken to mean unspecified.
-///
-/// NOTE: It is not a hard error to have an unspecified or invalid OS/ABI
-pub enum ElfOSABI {
-    /// Unix System V ABI or None, parsing None for this identifier field is *not* an
-    /// error.
-    NoneSystemV = 0,
-    /// HP-UX
-    HPUX = 1,
-    /// NetBSD
-    NetBSD = 2,
-    /// Object uses GNU ELF extensions.
-    GnuLinux = 3,
-    /// SUN Solaris
-    Solaris = 6,
-    /// IBM AIX
-    AIX = 7,
-    /// SGI Irix
-    IRIX = 8,
-    /// FreeBSD
-    FreeBSD = 9,
-    /// Compaq TRU64 UNIX
-    Tru64 = 10,
-    /// Novell Modesto
-    NovellModesto = 11,
-    /// OpenBSD
-    OpenBSD = 12,
-    /// Open Virtual Memory System
-    OpenVMS = 13,
-    /// NSK Non-Stop Kernel
-    NonStopKernel = 14,
-    /// Amiga Research OS
-    AROS = 15,
-    /// FenixOS Highly scalable multi-core OS
-    FenixOS = 16,
-    /// Nuxi CloudABI
-    CloudABI = 17,
-    /// Stratus Technologies OpenVOS
-    OpenVOS = 18,
-    /// ARM EABI (the object file contains symbol versioning extensions as described
-    /// in the aaelf32 documentation)
-    ///
-    /// NOTE: This value is specified by the the ARM ABI processor supplement.
-    ArmExtendedApplicationBinaryInterface = 64,
-    /// FDPIC ELF for either XTensa or ARM, depending on the detected machine. For ARM, this
-    /// is described in the fdpic document.
-    ///
-    /// NOTE: This value is specified by the the ARM ABI processor supplement and the
-    /// XTensa ABI processor supplement, respectively, depending on the detected machine.
-    ArmXTensaFunctionDescriptorPositionIndependentCode = 65,
-    /// ARM (non-EABI)
-    Arm = 97,
-    /// Standalone system
-    Standalone = 255,
-}
-
-impl<R> FromReader<R> for ElfOSABI
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let os_abi = ElfByte::from_reader(reader)?;
-        Self::from_u8(os_abi.0).ok_or_else(|| Error::InvalidOsAbi { os_abi })
-    }
-}
-
-impl<W> ToWriter<W> for ElfOSABI
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        ElfByte(*self as u8).to_writer(writer)
-    }
-}
-
-#[repr(C, packed)]
-#[derive(Debug, Clone, TypedBuilder, PartialEq, Eq)]
-/// The identifier field of an ELF header. Note that this structure is only
-/// decoded in order, with no regard to the file's class or data encoding, and
-/// is therefore always decoded the same way for all architectures and platforms.
-pub struct ElfHeaderIdentifier {
-    /// The magic value indicating that this is an ELF file (0x7F, 'E', 'L', 'F' in ASCII)
-    magic: [ElfByte; 4],
-    /// The file's class. See [ElfClass].
-    class: ElfClass,
-    /// The file's data encoding. See [ElfDataEncoding].
-    data_encoding: ElfDataEncoding,
-    /// The file's version. See [ElfIdentifierVersion].
-    version: ElfIdentifierVersion,
-    /// The file's OS/ABI. See [ElfOSABI].
-    os_abi: ElfOSABI,
-    /// The ABI version
-    ///
-    /// Identifies the version of the ABI to which the object is targeted. This field is
-    /// used to distinguish among incompatible versions of an ABI. The interpretation of
-    /// this version number is dependent on the ABI identified by the EI_OSABI field. If no
-    /// values are specified for the EI_OSABI field by the processor supplement or no
-    /// version values are specified for the ABI determined by a particular value of the
-    /// EI_OSABI byte, the value 0 shall be used for the EI_ABIVERSION byte; it indicates
-    /// unspecified.
-    abi_version: ElfByte,
-    /// Marks the beginning of the unused bytes in the identifier. These bytes are
-    /// reserved and set to zero; programs that read object ﬁles should ignore them. The
-    /// value of EI_PAD will change in the future if currently unused bytes are given
-    /// meanings.
-    pad: [ElfByte; 7],
-}
-
-impl<R> FromReader<R> for ElfHeaderIdentifier
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
+    fn from_reader_with(reader: &mut R, config: &mut Config) -> Result<Self, Self::Error> {
         Ok(Self {
-            magic: [
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-            ],
-            class: ElfClass::from_reader(reader)?,
-            data_encoding: ElfDataEncoding::from_reader(reader)?,
-            version: ElfIdentifierVersion::from_reader(reader)?,
-            os_abi: ElfOSABI::from_reader(reader)?,
-            abi_version: ElfByte::from_reader(reader)?,
-            pad: [
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-                ElfByte::from_reader(reader)?,
-            ],
+            header: ElfHeader::<EC, ED>::from_reader_with(reader, config)?,
         })
     }
 }
 
-impl<W> ToWriter<W> for ElfHeaderIdentifier
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        self.magic[0].to_writer(writer)?;
-        self.magic[1].to_writer(writer)?;
-        self.magic[2].to_writer(writer)?;
-        self.magic[3].to_writer(writer)?;
-        self.class.to_writer(writer)?;
-        self.data_encoding.to_writer(writer)?;
-        self.version.to_writer(writer)?;
-        self.os_abi.to_writer(writer)?;
-        self.abi_version.to_writer(writer)?;
-        self.pad[0].to_writer(writer)?;
-        self.pad[1].to_writer(writer)?;
-        self.pad[2].to_writer(writer)?;
-        self.pad[3].to_writer(writer)?;
-        self.pad[4].to_writer(writer)?;
-        self.pad[5].to_writer(writer)?;
-        self.pad[6].to_writer(writer)?;
-        Ok(())
-    }
+#[derive(Debug, Clone)]
+/// An ELF object file which may be of any class or any data encoding
+pub enum ElfKind {
+    /// A 32-bit, Little Endian ELF object file
+    Elf32LE(Elf<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>),
+    /// A 32-bit, Big Endian ELF object file
+    Elf32BE(Elf<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>),
+    /// A 64-bit, Little Endian ELF object file
+    Elf64LE(Elf<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>),
+    /// A 64-bit, Big Endian ELF object file
+    Elf64BE(Elf<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>),
 }
 
-from_primitive! {
-    #[repr(u16)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[non_exhaustive]
-    /// The ELF object type
-    enum ElfType<const EC: u8, const ED: u8> {
-        /// No file type
-        None = 0,
-        /// Relocatable file type
-        Relocatable = 1,
-        /// Executable file type
-        Executable = 2,
-        /// Shared object file type
-        Dynamic = 3,
-        /// Core file
-        Core = 4,
-        /// Number of defined types
-        NumberDefined = 5,
-        /// OS-specific range of types begin
-        LowOperatingSystem = 0xfe00,
-        /// OS specific range of types end
-        HighOperatingSystem = 0xfeff,
-        /// Processor-specific range of types begin
-        LowProcessorSpecific = 0xff00,
-        /// Processor specific range of types end
-        HighProcessorSpecific = 0xffff,
-    }
-}
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfType<EC, ED>
+impl<R> FromReader<R> for ElfKind
 where
     R: Read + Seek,
 {
     type Error = Error;
 
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let ty = ElfHalfWord::<EC, ED>::from_reader(reader)?;
+    fn from_reader_with(reader: &mut R, config: &mut Config) -> Result<Self, Self::Error> {
+        reader
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| Error::Io { kind: e.kind() })?;
 
-        if let Some(ty) = Self::from_u16(ty.0) {
-            Ok(ty)
-        } else {
-            Err(Error::InvalidType {
-                context: ErrorContext::from_reader(reader, size_of::<ElfHalfWord<EC, ED>>())
-                    .map_err(Error::from)?,
-            })
+        let ident = ElfHeaderIdentifier::from_reader_with(reader, config)?;
+
+        reader
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| Error::Io { kind: e.kind() })?;
+
+        match (ident.class, ident.data_encoding) {
+            (ElfClass::Elf32, ElfDataEncoding::LittleEndian) => {
+                Ok(Self::Elf32LE(Elf::<
+                    { ElfClass::Elf32 as u8 },
+                    { ElfDataEncoding::LittleEndian as u8 },
+                >::from_reader_with(
+                    reader, config
+                )?))
+            }
+            (ElfClass::Elf32, ElfDataEncoding::BigEndian) => Ok(Self::Elf32BE(Elf::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >::from_reader_with(
+                reader, config
+            )?)),
+            (ElfClass::Elf64, ElfDataEncoding::LittleEndian) => {
+                Ok(Self::Elf64LE(Elf::<
+                    { ElfClass::Elf64 as u8 },
+                    { ElfDataEncoding::LittleEndian as u8 },
+                >::from_reader_with(
+                    reader, config
+                )?))
+            }
+            (ElfClass::Elf64, ElfDataEncoding::BigEndian) => Ok(Self::Elf64BE(Elf::<
+                { ElfClass::Elf64 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >::from_reader_with(
+                reader, config
+            )?)),
+            (ElfClass::None, e) => {
+                let err = Error::InvalidClassEncodingPair {
+                    class: ElfClass::None,
+                    encoding: e,
+                };
+
+                if config.ignore.contains(&err) {
+                    config.default_elf_kind(reader)
+                } else {
+                    Err(err)
+                }
+            }
+            (c, ElfDataEncoding::None) => {
+                let err = Error::InvalidClassEncodingPair {
+                    class: c,
+                    encoding: ElfDataEncoding::None,
+                };
+
+                if config.ignore.contains(&err) {
+                    config.default_elf_kind(reader)
+                } else {
+                    Err(err)
+                }
+            }
         }
     }
 }
 
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfType<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        ElfHalfWord::<EC, ED>((*self as u16).to_le()).to_writer(writer)
-    }
-}
-
-from_primitive! {
-    #[allow(non_camel_case_types)]
-    #[repr(u16)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[non_exhaustive]
-    /// The ELF object's machine
-    enum ElfMachine<const EC: u8, const ED: u8> {
-        /// No machine
-        NONE = 0,
-        /// AT&T WE 32100
-        M32 = 1,
-        /// SPARC
-        SPARC = 2,
-        /// Intel 80386
-        I386 = 3,
-        /// Motorola 68000
-        M68K = 4,
-        /// Motorola 88000
-        M88K = 5,
-        /// Intel MCU
-        IAMCU = 6,
-        /// Intel 80860
-        I860 = 7,
-        /// MIPS I Architecture
-        MIPS = 8,
-        /// IBM System/370 Processor
-        S370 = 9,
-        /// MIPS RS3000 Little-endian
-        MIPS_RS3_LE = 10,
-        // reserved	11-14	Reserved for future use
-        /// Hewlett-Packard PA-RISC
-        PARISC = 15,
-        // reserved	16	Reserved for future use
-        /// Fujitsu VPP500
-        VPP500 = 17,
-        /// Enhanced instruction set SPARC
-        SPARC32PLUS = 18,
-        /// Intel 80960
-        I960 = 19,
-        /// PowerPC
-        PPC = 20,
-        /// 64-bit PowerPC
-        PPC64 = 21,
-        /// IBM System/390 Processor
-        S390 = 22,
-        /// IBM SPU/SPC
-        SPU = 23,
-        // reserved	24-35	Reserved for future use
-        /// NEC V800
-        V800 = 36,
-        /// Fujitsu FR20
-        FR20 = 37,
-        /// TRW RH-32
-        RH32 = 38,
-        /// Motorola RCE
-        RCE = 39,
-        /// ARM 32-bit architecture (AARCH32)
-        ARM = 40,
-        /// Digital Alpha
-        ALPHA = 41,
-        /// Hitachi SH
-        SH = 42,
-        /// SPARC Version 9
-        SPARCV9 = 43,
-        /// Siemens TriCore embedded processor
-        TRICORE = 44,
-        /// Argonaut RISC Core, Argonaut Technologies Inc.
-        ARC = 45,
-        /// Hitachi H8/300
-        H8_300 = 46,
-        /// Hitachi H8/300H
-        H8_300H = 47,
-        /// Hitachi H8S
-        H8S = 48,
-        /// Hitachi H8/500
-        H8_500 = 49,
-        /// Intel IA-64 processor architecture
-        IA_64 = 50,
-        /// Stanford MIPS-X
-        MIPS_X = 51,
-        /// Motorola ColdFire
-        COLDFIRE = 52,
-        /// Motorola M68HC12
-        M68HC12 = 53,
-        /// Fujitsu MMA Multimedia Accelerator
-        MMA = 54,
-        /// Siemens PCP
-        PCP = 55,
-        /// Sony nCPU embedded RISC processor
-        NCPU = 56,
-        /// Denso NDR1 microprocessor
-        NDR1 = 57,
-        /// Motorola Star*Core processor
-        STARCORE = 58,
-        /// Toyota ME16 processor
-        ME16 = 59,
-        /// STMicroelectronics ST100 processor
-        ST100 = 60,
-        /// Advanced Logic Corp. TinyJ embedded processor family
-        TINYJ = 61,
-        /// AMD x86-64 architecture
-        X86_64 = 62,
-        /// Sony DSP Processor
-        PDSP = 63,
-        /// Digital Equipment Corp. PDP-10
-        PDP10 = 64,
-        /// Digital Equipment Corp. PDP-11
-        PDP11 = 65,
-        /// Siemens FX66 microcontroller
-        FX66 = 66,
-        /// STMicroelectronics ST9+ 8/16 bit microcontroller
-        ST9PLUS = 67,
-        /// STMicroelectronics ST7 8-bit microcontroller
-        ST7 = 68,
-        /// Motorola MC68HC16 Microcontroller
-        M68HC16 = 69,
-        /// Motorola MC68HC11 Microcontroller
-        M68HC11 = 70,
-        /// Motorola MC68HC08 Microcontroller
-        M68HC08 = 71,
-        /// Motorola MC68HC05 Microcontroller
-        M68HC05 = 72,
-        /// Silicon Graphics SVx
-        SVX = 73,
-        /// STMicroelectronics ST19 8-bit microcontroller
-        ST19 = 74,
-        /// Digital VAX
-        VAX = 75,
-        /// Axis Communications 32-bit embedded processor
-        CRIS = 76,
-        /// Infineon Technologies 32-bit embedded processor
-        JAVELIN = 77,
-        /// Element 14 64-bit DSP Processor
-        FIREPATH = 78,
-        /// LSI Logic 16-bit DSP Processor
-        ZSP = 79,
-        /// Donald Knuth's educational 64-bit processor
-        MMIX = 80,
-        /// Harvard University machine-independent object files
-        HUANY = 81,
-        /// SiTera Prism
-        PRISM = 82,
-        /// Atmel AVR 8-bit microcontroller
-        AVR = 83,
-        /// Fujitsu FR30
-        FR30 = 84,
-        /// Mitsubishi D10V
-        D10V = 85,
-        /// Mitsubishi D30V
-        D30V = 86,
-        /// NEC v850
-        V850 = 87,
-        /// Mitsubishi M32R
-        M32R = 88,
-        /// Matsushita MN10300
-        MN10300 = 89,
-        /// Matsushita MN10200
-        MN10200 = 90,
-        /// picoJava
-        PJ = 91,
-        /// OpenRISC 32-bit embedded processor
-        OPENRISC = 92,
-        /// ARC International ARCompact processor (old spelling/synonym: ARC_A5)
-        ARC_COMPACT = 93,
-        /// Tensilica Xtensa Architecture
-        XTENSA = 94,
-        /// Alphamosaic VideoCore processor
-        VIDEOCORE = 95,
-        /// Thompson Multimedia General Purpose Processor
-        TMM_GPP = 96,
-        /// National Semiconductor 32000 series
-        NS32K = 97,
-        /// Tenor Network TPC processor
-        TPC = 98,
-        /// Trebia SNP 1000 processor
-        SNP1K = 99,
-        /// STMicroelectronics (www.st.com) ST200 microcontroller
-        ST200 = 100,
-        /// Ubicom IP2xxx microcontroller family
-        IP2K = 101,
-        /// MAX Processor
-        MAX = 102,
-        /// National Semiconductor CompactRISC microprocessor
-        CR = 103,
-        /// Fujitsu F2MC16
-        F2MC16 = 104,
-        /// Texas Instruments embedded microcontroller msp430
-        MSP430 = 105,
-        /// Analog Devices Blackfin (DSP) processor
-        BLACKFIN = 106,
-        /// S1C33 Family of Seiko Epson processors
-        SE_C33 = 107,
-        /// Sharp embedded microprocessor
-        SEP = 108,
-        /// Arca RISC Microprocessor
-        ARCA = 109,
-        /// Microprocessor series from PKU-Unity Ltd. and MPRC of Peking University
-        UNICORE = 110,
-        /// eXcess: 16/32/64-bit configurable embedded CPU
-        EXCESS = 111,
-        /// Icera Semiconductor Inc. Deep Execution Processor
-        DXP = 112,
-        /// Altera Nios II soft-core processor
-        ALTERA_NIOS2 = 113,
-        /// National Semiconductor CompactRISC CRX microprocessor
-        CRX = 114,
-        /// Motorola XGATE embedded processor
-        XGATE = 115,
-        /// Infineon C16x/XC16x processor
-        C166 = 116,
-        /// Renesas M16C series microprocessors
-        M16C = 117,
-        /// Microchip Technology dsPIC30F Digital Signal Controller
-        DSPIC30F = 118,
-        /// Freescale Communication Engine RISC core
-        CE = 119,
-        /// Renesas M32C series microprocessors
-        M32C = 120,
-        // reserved	121-130	Reserved for future use
-        /// Altium TSK3000 core
-        TSK3000 = 131,
-        /// Freescale RS08 embedded processor
-        RS08 = 132,
-        /// Analog Devices SHARC family of 32-bit DSP processors
-        SHARC = 133,
-        /// Cyan Technology eCOG2 microprocessor
-        ECOG2 = 134,
-        /// Sunplus S+core7 RISC processor
-        SCORE7 = 135,
-        /// New Japan Radio (NJR) 24-bit DSP Processor
-        DSP24 = 136,
-        /// Broadcom VideoCore III processor
-        VIDEOCORE3 = 137,
-        /// RISC processor for Lattice FPGA architecture
-        LATTICEMICO32 = 138,
-        /// Seiko Epson C17 family
-        SE_C17 = 139,
-        /// The Texas Instruments TMS320C6000 DSP family
-        TI_C6000 = 140,
-        /// The Texas Instruments TMS320C2000 DSP family
-        TI_C2000 = 141,
-        /// The Texas Instruments TMS320C55x DSP family
-        TI_C5500 = 142,
-        /// Texas Instruments Application Specific RISC Processor, 32bit fetch
-        TI_ARP32 = 143,
-        /// Texas Instruments Programmable Realtime Unit
-        TI_PRU = 144,
-        // reserved	145-159	Reserved for future use
-        /// STMicroelectronics 64bit VLIW Data Signal Processor
-        MMDSP_PLUS = 160,
-        /// Cypress M8C microprocessor
-        CYPRESS_M8C = 161,
-        /// Renesas R32C series microprocessors
-        R32C = 162,
-        /// NXP Semiconductors TriMedia architecture family
-        TRIMEDIA = 163,
-        /// QUALCOMM DSP6 Processor
-        QDSP6 = 164,
-        /// Intel 8051 and variants
-        I8051 = 165,
-        /// STMicroelectronics STxP7x family of configurable and extensible RISC processors
-        STXP7X = 166,
-        /// Andes Technology compact code size embedded RISC processor family
-        NDS32 = 167,
-        /// Cyan Technology eCOG1X family
-        ECOG1 = 168,
-        /// Dallas Semiconductor MAXQ30 Core Micro-controllers
-        MAXQ30 = 169,
-        /// New Japan Radio (NJR) 16-bit DSP Processor
-        XIMO16 = 170,
-        /// M2000 Reconfigurable RISC Microprocessor
-        MANIK = 171,
-        /// Cray Inc. NV2 vector architecture
-        CRAYNV2 = 172,
-        /// Renesas RX family
-        RX = 173,
-        /// Imagination Technologies META processor architecture
-        METAG = 174,
-        /// MCST Elbrus general purpose hardware architecture
-        MCST_ELBRUS = 175,
-        /// Cyan Technology eCOG16 family
-        ECOG16 = 176,
-        /// National Semiconductor CompactRISC CR16 16-bit microprocessor
-        CR16 = 177,
-        /// Freescale Extended Time Processing Unit
-        ETPU = 178,
-        /// Infineon Technologies SLE9X core
-        SLE9X = 179,
-        /// Intel L10M
-        L10M = 180,
-        /// Intel K10M
-        K10M = 181,
-        // reserved	182	Reserved for future Intel use
-        /// ARM 64-bit architecture (AARCH64)
-        AARCH64 = 183,
-        // reserved	184	Reserved for future ARM use
-        /// Atmel Corporation 32-bit microprocessor family
-        AVR32 = 185,
-        /// STMicroeletronics STM8 8-bit microcontroller
-        STM8 = 186,
-        /// Tilera TILE64 multicore architecture family
-        TILE64 = 187,
-        /// Tilera TILEPro multicore architecture family
-        TILEPRO = 188,
-        /// Xilinx MicroBlaze 32-bit RISC soft processor core
-        MICROBLAZE = 189,
-        /// NVIDIA CUDA architecture
-        CUDA = 190,
-        /// Tilera TILE-Gx multicore architecture family
-        TILEGX = 191,
-        /// CloudShield architecture family
-        CLOUDSHIELD = 192,
-        /// KIPO-KAIST Core-A 1st generation processor family
-        COREA_1ST = 193,
-        /// KIPO-KAIST Core-A 2nd generation processor family
-        COREA_2ND = 194,
-        /// Synopsys ARCompact V2
-        ARC_COMPACT2 = 195,
-        /// Open8 8-bit RISC soft processor core
-        OPEN8 = 196,
-        /// Renesas RL78 family
-        RL78 = 197,
-        /// Broadcom VideoCore V processor
-        VIDEOCORE5 = 198,
-        /// Renesas 78KOR family
-        R78KOR = 199,
-        /// Freescale 56800EX Digital Signal Controller (DSC)
-        F56800EX = 200,
-        /// Beyond BA1 CPU architecture
-        BA1 = 201,
-        /// Beyond BA2 CPU architecture
-        BA2 = 202,
-        /// XMOS xCORE processor family
-        XCORE = 203,
-        /// Microchip 8-bit PIC(r) family
-        MCHP_PIC = 204,
-        /// Reserved by Intel
-        INTEL205 = 205,
-        /// Reserved by Intel
-        INTEL206 = 206,
-        /// Reserved by Intel
-        INTEL207 = 207,
-        /// Reserved by Intel
-        INTEL208 = 208,
-        /// Reserved by Intel
-        INTEL209 = 209,
-        /// KM211 KM32 32-bit processor
-        KM32 = 210,
-        /// KM211 KMX32 32-bit processor
-        KMX32 = 211,
-        /// KM211 KMX16 16-bit processor
-        KMX16 = 212,
-        /// KM211 KMX8 8-bit processor
-        KMX8 = 213,
-        /// KM211 KVARC processor
-        KVARC = 214,
-        /// Paneve CDP architecture family
-        CDP = 215,
-        /// Cognitive Smart Memory Processor
-        COGE = 216,
-        /// Bluechip Systems CoolEngine
-        COOL = 217,
-        /// Nanoradio Optimized RISC
-        NORC = 218,
-        /// CSR Kalimba architecture family
-        CSR_KALIMBA = 219,
-        /// Zilog Z80
-        Z80 = 220,
-        /// Controls and Data Services VISIUMcore processor
-        VISIUM = 221,
-        /// FTDI Chip FT32 high performance 32-bit RISC architecture
-        FT32 = 222,
-        /// Moxie processor family
-        MOXIE = 223,
-        /// AMD GPU architecture
-        AMDGPU = 224,
-        // 225 - 242 reserved
-        /// RISC-V
-        Riscv = 243,
-        /// Linux BPF -- in-kernel virtual machine
-        BPF = 247,
-        /// C-SKY
-        CSKY = 252,
-        /// LoongArch
-        LOONGARCH = 258,
-    }
-}
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfMachine<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let machine = ElfHalfWord::<EC, ED>::from_reader(reader)?;
-
-        if let Some(machine) = Self::from_u16(machine.0) {
-            Ok(machine)
-        } else {
-            Err(Error::InvalidMachine {
-                context: ErrorContext::from_reader(reader, size_of::<ElfHalfWord<EC, ED>>())
-                    .map_err(Error::from)?,
-            })
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfMachine<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        ElfHalfWord::<EC, ED>((*self as u16).to_le()).to_writer(writer)
-    }
-}
-
-from_primitive! {
-    #[repr(u32)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[non_exhaustive]
-    /// The ELF object's version
-    enum ElfVersion<const EC: u8, const ED: u8> {
-        /// Invalid version
-        None = 0,
-        /// Current version
-        Current = 1,
-    }
-}
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfVersion<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let version = ElfWord::<EC, ED>::from_reader(reader)?;
-
-        if let Some(version) = Self::from_u32(version.0) {
-            Ok(version)
-        } else {
-            Err(Error::InvalidVersion {
-                context: ErrorContext::from_reader(reader, size_of::<ElfWord<EC, ED>>())
-                    .map_err(Error::from)?,
-            })
-        }
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfVersion<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        ElfWord::<EC, ED>((*self as u32).to_le()).to_writer(writer)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// The header for an ELF object. Resides at the beginning and holds a ``road map''
-/// describing the file's organization
-pub struct ElfHeader<const EC: u8, const ED: u8> {
-    /// The file's identifier information, which marks the file as an object file
-    /// and provide machine- independent data with which to decode and interpret the
-    pub identifier: ElfHeaderIdentifier,
-    /// The object file type
-    pub r#type: ElfType<EC, ED>,
-    /// The file's machine, which specifies the required architecture for this
-    /// object file
-    pub machine: ElfMachine<EC, ED>,
-    /// The object file version
-    pub version: ElfVersion<EC, ED>,
-    /// The file's entrypoint. This is the virtual address to which the system
-    /// first transfers control, thus starting the process. If the object has no
-    /// associated entry point, this member is zero (absent).
-    pub entrypoint: Option<ElfAddress<EC, ED>>,
-    /// The program header table's file offset in bytes. If the file has no program
-    /// header table, this member is zero (absent).
-    pub program_header_offset: Option<ElfOffset<EC, ED>>,
-    /// The section header table's file offset in bytes. If the file has no section
-    /// header table, this member is zero (absent).
-    pub section_header_offset: Option<ElfOffset<EC, ED>>,
-    /// The processor-specific flags associated with the file.
-    /// TODO: Make this a trait abstract over the various architectures' flags
-    pub flags: ElfWord<EC, ED>,
-    /// The ELF header's size in bytes
-    pub header_size: ElfHalfWord<EC, ED>,
-    /// The size in bytes of a program header table entry; all entries are the same
-    /// size
-    pub program_header_entry_size: ElfHalfWord<EC, ED>,
-    /// The number of entries in the program header table. If the file has no
-    /// program header table, this member is zero (absent).
-    pub program_header_entry_count: ElfHalfWord<EC, ED>,
-    /// The size in bytes of a section header table entry; all entries are the same
-    /// size
-    pub section_header_entry_size: ElfHalfWord<EC, ED>,
-    /// The number of entries in the section header table.  Thus the product of
-    /// e_shentsize and e_shnum gives the section header table's size in bytes. If a file
-    /// has no section header table, e_shnum holds the value zero.  If the number of
-    /// sections is greater than or equal to SHN_LORESERVE (0xﬀ00), this member has the
-    /// value zero and the actual number of section header table entries is contained in
-    /// the sh_size field of the section header at index 0. (Otherwise, the sh_size
-    /// member of the initial entry contains 0.)
-    pub section_header_entry_count: ElfHalfWord<EC, ED>,
-    /// This member holds the section header table index of the entry associated with
-    /// the section name string table. If the file has no section name string table, this
-    /// member holds the value SHN_UNDEF. See ``Sections'' and ``String Table'' below
-    /// for more information.  If the section name string table section index is greater
-    /// than or equal to SHN_LORESERVE (0xﬀ00), this member has the value SHN_XINDEX
-    /// (0xﬀﬀ) and the actual index of the section name string table section is
-    /// contained in the sh_link field of the section header at index 0.  (Otherwise, the
-    /// sh_link member of the initial entry contains 0.)
-    pub section_name_string_table_index: ElfHalfWord<EC, ED>,
-    /// Extra data in the elf header. The contents of this data are not specified by the ELF
-    /// specification, but extra data may be part of the header as specified by
-    /// `header_size`. The size of this data is equal to the `header_size` minus the size of
-    /// the preceding fields.
-    pub data: Vec<ElfByte>,
-}
-
-impl<const EC: u8, const ED: u8> ElfHeader<EC, ED> {
-    /// The size of the ELF header structure in bytes, less the size of the `data` field
-    pub const SIZE: usize = size_of::<ElfHeaderIdentifier>()
-        + size_of::<ElfType<EC, ED>>()
-        + size_of::<ElfMachine<EC, ED>>()
-        + size_of::<ElfVersion<EC, ED>>()
-        + size_of::<ElfAddress<EC, ED>>()
-        + size_of::<ElfOffset<EC, ED>>()
-        + size_of::<ElfOffset<EC, ED>>()
-        + size_of::<ElfWord<EC, ED>>()
-        + size_of::<ElfHalfWord<EC, ED>>()
-        + size_of::<ElfHalfWord<EC, ED>>()
-        + size_of::<ElfHalfWord<EC, ED>>()
-        + size_of::<ElfHalfWord<EC, ED>>()
-        + size_of::<ElfHalfWord<EC, ED>>()
-        + size_of::<ElfHalfWord<EC, ED>>();
-}
-
-impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfHeader<EC, ED>
-where
-    R: Read + Seek,
-{
-    type Error = Error;
-
-    fn from_reader(reader: &mut R) -> Result<Self, Self::Error> {
-        let identifier = ElfHeaderIdentifier::from_reader(reader)?;
-        let r#type = ElfType::<EC, ED>::from_reader(reader)?;
-        let machine = ElfMachine::<EC, ED>::from_reader(reader)?;
-        let version = ElfVersion::<EC, ED>::from_reader(reader)?;
-        let entrypoint = ElfAddress::<EC, ED>::from_reader(reader).ok();
-        let program_header_offset = ElfOffset::<EC, ED>::from_reader(reader).ok();
-        let section_header_offset = ElfOffset::<EC, ED>::from_reader(reader).ok();
-        let flags = ElfWord::<EC, ED>::from_reader(reader)?;
-        let header_size = ElfHalfWord::<EC, ED>::from_reader(reader)?;
-        let program_header_entry_size = ElfHalfWord::<EC, ED>::from_reader(reader)?;
-        let program_header_entry_count = ElfHalfWord::<EC, ED>::from_reader(reader)?;
-        let section_header_entry_size = ElfHalfWord::<EC, ED>::from_reader(reader)?;
-        let section_header_entry_count = ElfHalfWord::<EC, ED>::from_reader(reader)?;
-        let section_name_string_table_index = ElfHalfWord::<EC, ED>::from_reader(reader)?;
-
-        let data = {
-            let mut data = vec![ElfByte(0); header_size.0 as usize - Self::SIZE];
-            data.iter_mut()
-                .try_for_each(|b| ElfByte::from_reader(reader).map(|r| *b = r))?;
-            data
-        };
-
-        Ok(Self {
-            identifier,
-            r#type,
-            machine,
-            version,
-            entrypoint,
-            program_header_offset,
-            section_header_offset,
-            flags,
-            header_size,
-            program_header_entry_size,
-            program_header_entry_count,
-            section_header_entry_size,
-            section_header_entry_count,
-            section_name_string_table_index,
-            data,
-        })
-    }
-}
-
-impl<W, const EC: u8, const ED: u8> ToWriter<W> for ElfHeader<EC, ED>
-where
-    W: Write,
-{
-    type Error = Error;
-
-    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
-        self.identifier.to_writer(writer)?;
-        self.r#type.to_writer(writer)?;
-        self.machine.to_writer(writer)?;
-        self.version.to_writer(writer)?;
-        if let Some(entrypoint) = self.entrypoint {
-            entrypoint.to_writer(writer)?;
-        } else {
-            ElfAddress::<EC, ED>(0).to_writer(writer)?;
-        }
-        if let Some(program_header_offset) = self.program_header_offset {
-            program_header_offset.to_writer(writer)?;
-        } else {
-            ElfOffset::<EC, ED>(0).to_writer(writer)?;
-        }
-        if let Some(section_header_offset) = self.section_header_offset {
-            section_header_offset.to_writer(writer)?;
-        } else {
-            ElfOffset::<EC, ED>(0).to_writer(writer)?;
-        }
-        self.flags.to_writer(writer)?;
-        self.header_size.to_writer(writer)?;
-        self.program_header_entry_size.to_writer(writer)?;
-        self.program_header_entry_count.to_writer(writer)?;
-        self.section_header_entry_size.to_writer(writer)?;
-        self.section_header_entry_count.to_writer(writer)?;
-        self.section_name_string_table_index.to_writer(writer)?;
-        Ok(())
-    }
-}
-
-#[allow(clippy::unwrap_used)]
+#[allow(
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals,
+    clippy::unwrap_used
+)]
 #[cfg(test)]
 mod test {
+    use std::io::ErrorKind;
+
+    use self::error::ErrorContext;
+
     use super::*;
+    use paste::paste;
 
-    #[test]
-    fn test_size() {
-        assert_eq!(size_of::<Elf32LEHalfWord>(), 2);
-        assert_eq!(size_of::<Elf32BEHalfWord>(), 2);
-        assert_eq!(size_of::<Elf64LEHalfWord>(), 2);
-        assert_eq!(size_of::<Elf64BEHalfWord>(), 2);
-        assert_eq!(size_of::<Elf32LEWord>(), 4);
-        assert_eq!(size_of::<Elf32BEWord>(), 4);
-        assert_eq!(size_of::<Elf64LEWord>(), 4);
-        assert_eq!(size_of::<Elf64BEWord>(), 4);
-        assert_eq!(size_of::<Elf32LEExtendedWord>(), 8);
-        assert_eq!(size_of::<Elf32BEExtendedWord>(), 8);
-        assert_eq!(size_of::<Elf64LEExtendedWord>(), 8);
-        assert_eq!(size_of::<Elf64BEExtendedWord>(), 8);
-        assert_eq!(size_of::<Elf32LESignedWord>(), 4);
-        assert_eq!(size_of::<Elf32BESignedWord>(), 4);
-        assert_eq!(size_of::<Elf64LESignedWord>(), 4);
-        assert_eq!(size_of::<Elf64BESignedWord>(), 4);
-        assert_eq!(size_of::<Elf32LESignedExtendedWord>(), 8);
-        assert_eq!(size_of::<Elf32BESignedExtendedWord>(), 8);
-        assert_eq!(size_of::<Elf64LESignedExtendedWord>(), 8);
-        assert_eq!(size_of::<Elf64BESignedExtendedWord>(), 8);
-        assert_eq!(size_of::<Elf32LEAddress>(), 4);
-        assert_eq!(size_of::<Elf32BEAddress>(), 4);
-        assert_eq!(size_of::<Elf64LEAddress>(), 8);
-        assert_eq!(size_of::<Elf64BEAddress>(), 8);
-        assert_eq!(size_of::<Elf32LEOffset>(), 4);
-        assert_eq!(size_of::<Elf32BEOffset>(), 4);
-        assert_eq!(size_of::<Elf64LEOffset>(), 8);
-        assert_eq!(size_of::<Elf64BEOffset>(), 8);
-        assert_eq!(size_of::<Elf32LESection>(), 2);
-        assert_eq!(size_of::<Elf32BESection>(), 2);
-        assert_eq!(size_of::<Elf64LESection>(), 2);
-        assert_eq!(size_of::<Elf64BESection>(), 2);
-        assert_eq!(size_of::<Elf32LEVersionSymbol>(), 2);
-        assert_eq!(size_of::<Elf32BEVersionSymbol>(), 2);
-        assert_eq!(size_of::<Elf64LEVersionSymbol>(), 2);
-        assert_eq!(size_of::<Elf64BEVersionSymbol>(), 2);
-        assert_eq!(
-            size_of::<ElfType<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
-            ),
-            size_of::<Elf32LEHalfWord>()
-        );
-        assert_eq!(
-            size_of::<ElfType<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(),
-            size_of::<Elf32BEHalfWord>()
-        );
-        assert_eq!(
-            size_of::<ElfType<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
-            ),
-            size_of::<Elf64LEHalfWord>()
-        );
-        assert_eq!(
-            size_of::<ElfType<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(),
-            size_of::<Elf64BEHalfWord>()
-        );
-        assert_eq!(
-            size_of::<ElfMachine<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
-            ),
-            size_of::<Elf32LEHalfWord>()
-        );
-        assert_eq!(
-            size_of::<ElfMachine<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(
-            ),
-            size_of::<Elf32BEHalfWord>()
-        );
-        assert_eq!(
-            size_of::<ElfMachine<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
-            ),
-            size_of::<Elf64LEHalfWord>()
-        );
-        assert_eq!(
-            size_of::<ElfMachine<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(
-            ),
-            size_of::<Elf64BEHalfWord>()
-        );
-        assert_eq!(
-            size_of::<ElfVersion<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
-            ),
-            size_of::<Elf32LEWord>()
-        );
-        assert_eq!(
-            size_of::<ElfVersion<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(
-            ),
-            size_of::<Elf32BEWord>()
-        );
-        assert_eq!(
-            size_of::<ElfVersion<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>>(
-            ),
-            size_of::<Elf64LEWord>()
-        );
-        assert_eq!(
-            size_of::<ElfVersion<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>>(
-            ),
-            size_of::<Elf64BEWord>()
-        );
-    }
-
-    #[test]
-    fn test_elf_half_word() {
-        let mut val = &[0x01, 0x02];
-        let le32hw: Elf32LEHalfWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32hw: Elf32BEHalfWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64hw: Elf64LEHalfWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64hw: Elf64BEHalfWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        assert_eq!(le32hw.0, 0x0201);
-        assert_eq!(be32hw.0, 0x0102);
-        assert_eq!(le64hw.0, 0x0201);
-        assert_eq!(be64hw.0, 0x0102);
-
-        let mut val_out = Vec::new();
-        le32hw.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be32hw.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        le64hw.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64hw.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    fn test_elf_word() {
-        let mut val = &[0x01, 0x02, 0x03, 0x04];
-        let le32w: Elf32LEWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32w: Elf32BEWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64w: Elf64LEWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64w: Elf64BEWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        assert_eq!(le32w.0, 0x04030201);
-        assert_eq!(be32w.0, 0x01020304);
-        assert_eq!(le64w.0, 0x04030201);
-        assert_eq!(be64w.0, 0x01020304);
-        let mut val_out = Vec::new();
-        le32w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be32w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        le64w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    fn test_elf_signed_word() {
-        let mut val = &[0x01, 0x02, 0x03, 0x04];
-        let le32w: Elf32LEWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32w: Elf32BEWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64w: Elf64LEWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64w: Elf64BEWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        assert_eq!(le32w.0, 0x04030201);
-        assert_eq!(be32w.0, 0x01020304);
-        assert_eq!(le64w.0, 0x04030201);
-        assert_eq!(be64w.0, 0x01020304);
-        let mut val_out = Vec::new();
-        le32w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be32w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        le64w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    fn test_elf_extended_word() {
-        let mut val = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-        let le32w: Elf32LEExtendedWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32w: Elf32BEExtendedWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64w: Elf64LEExtendedWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64w: Elf64BEExtendedWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        assert_eq!(le32w.0, 0x0807060504030201);
-        assert_eq!(be32w.0, 0x0102030405060708);
-        assert_eq!(le64w.0, 0x0807060504030201);
-        assert_eq!(be64w.0, 0x0102030405060708);
-        let mut val_out = Vec::new();
-        le32w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be32w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        le64w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    fn test_elf_signed_extended_word() {
-        let mut val = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-        let le32w: Elf32LESignedExtendedWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32w: Elf32BESignedExtendedWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64w: Elf64LESignedExtendedWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64w: Elf64BESignedExtendedWord =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        assert_eq!(le32w.0, 0x0807060504030201);
-        assert_eq!(be32w.0, 0x0102030405060708);
-        assert_eq!(le64w.0, 0x0807060504030201);
-        assert_eq!(be64w.0, 0x0102030405060708);
-        let mut val_out = Vec::new();
-        le32w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be32w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        le64w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64w.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    fn test_elf_address() {
-        let mut val = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-        let le32a: Elf32LEAddress =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32a: Elf32BEAddress =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64a: Elf64LEAddress =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64a: Elf64BEAddress =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-
-        assert_eq!(le32a.0, 0x04030201);
-        assert_eq!(be32a.0, 0x01020304);
-        assert_eq!(le64a.0, 0x0807060504030201);
-        assert_eq!(be64a.0, 0x0102030405060708);
-
-        let mut val_out = Vec::new();
-        le32a.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val[..4]);
-        val_out.clear();
-        be32a.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val[..4]);
-        val_out.clear();
-        le64a.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64a.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    fn test_elf_offset() {
-        let mut val = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-        let le32o: Elf32LEOffset =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32o: Elf32BEOffset =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64o: Elf64LEOffset =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64o: Elf64BEOffset =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        assert_eq!(le32o.0, 0x04030201);
-        assert_eq!(be32o.0, 0x01020304);
-        assert_eq!(le64o.0, 0x0807060504030201);
-        assert_eq!(be64o.0, 0x0102030405060708);
-        let mut val_out = Vec::new();
-        le32o.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val[..4]);
-        val_out.clear();
-        be32o.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val[..4]);
-        val_out.clear();
-        le64o.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64o.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    fn test_elf_section() {
-        let mut val = &[0x01, 0x02];
-        let le32s: Elf32LESection =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32s: Elf32BESection =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64s: Elf64LESection =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64s: Elf64BESection =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        assert_eq!(le32s.0, 0x0201);
-        assert_eq!(be32s.0, 0x0102);
-        assert_eq!(le64s.0, 0x0201);
-        assert_eq!(be64s.0, 0x0102);
-        let mut val_out = Vec::new();
-        le32s.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be32s.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        le64s.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64s.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    fn test_elf_version_symbol() {
-        let mut val = &[0x01, 0x02];
-        let le32vs: Elf32LEVersionSymbol =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be32vs: Elf32BEVersionSymbol =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let le64vs: Elf64LEVersionSymbol =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        let be64vs: Elf64BEVersionSymbol =
-            FromReader::from_reader(&mut std::io::Cursor::new(&mut val)).unwrap();
-        assert_eq!(le32vs.0, 0x0201);
-        assert_eq!(be32vs.0, 0x0102);
-        assert_eq!(le64vs.0, 0x0201);
-        assert_eq!(be64vs.0, 0x0102);
-        let mut val_out = Vec::new();
-        le32vs.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be32vs.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        le64vs.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-        val_out.clear();
-        be64vs.to_writer(&mut val_out).unwrap();
-        assert_eq!(val_out, val);
-    }
-
-    #[test]
-    // Only need one test for identifier, it is not class/encoding dependent
-    fn test_elf_identifier() {
-        let mut bytes = &[
-            // Magic
-            0x7f, 0x45, 0x4c, 0x46, // Class (32)
-            0x01, // Data encoding (LE)
-            0x01, // Version (Current)
-            0x01, // OS ABI (SystemV)
-            0x00, // ABI Version
-            0x00, // Padding
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ];
-
-        let id = ElfHeaderIdentifier::from_reader(&mut std::io::Cursor::new(&mut bytes)).unwrap();
-
-        let mut bytes_out = Vec::new();
-        id.to_writer(&mut bytes_out).unwrap();
-        assert_eq!(bytes, bytes_out.as_slice());
-        assert_eq!(
-            id,
-            ElfHeaderIdentifier {
-                magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
-                class: ElfClass::Elf32,
-                data_encoding: ElfDataEncoding::LittleEndian,
-                version: ElfIdentifierVersion::Current,
-                os_abi: ElfOSABI::NoneSystemV,
-                abi_version: ElfByte(0),
-                pad: [ElfByte(0); 7],
+    macro_rules! file_test {
+        ($file:expr, $name:ident) => {
+            paste! {
+                pub const [<TEST_ $name:upper>]: &[u8] = include_bytes!(concat!("../", $file));
+                #[test]
+                fn [<test_ $name:lower>]() {
+                        let mut test = Vec::from([<TEST_ $name:upper>]);
+                        let _ = ElfKind::from_reader(&mut std::io::Cursor::new(&mut test)).unwrap();
+                }
             }
-        );
-    }
-
-    #[test]
-    fn test_elf_type() {
-        let mut bytes_le = &[0x01, 0x00];
-        let mut bytes_be = &[0x00, 0x01];
-
-        let le32t = ElfType::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be32t = ElfType::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-        let le64t = ElfType::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be64t = ElfType::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-
-        assert_eq!(le32t, ElfType::Relocatable);
-        assert_eq!(be32t, ElfType::Relocatable);
-        assert_eq!(le64t, ElfType::Relocatable);
-        assert_eq!(be64t, ElfType::Relocatable);
-
-        let mut le32t_out = Vec::new();
-        le32t.to_writer(&mut le32t_out).unwrap();
-        assert_eq!(le32t_out, bytes_le);
-        let mut be32t_out = Vec::new();
-        be32t.to_writer(&mut be32t_out).unwrap();
-        assert_eq!(be32t_out, bytes_be);
-        let mut le64t_out = Vec::new();
-        le64t.to_writer(&mut le64t_out).unwrap();
-        assert_eq!(le64t_out, bytes_le);
-        let mut be64t_out = Vec::new();
-        be64t.to_writer(&mut be64t_out).unwrap();
-        assert_eq!(be64t_out, bytes_be);
-    }
-
-    #[test]
-    fn test_elf_machine() {
-        let mut bytes_le = &[0x03, 0x00];
-        let mut bytes_be = &[0x00, 0x03];
-
-        let le32m = ElfMachine::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be32m = ElfMachine::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-        let le64m = ElfMachine::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be64m = ElfMachine::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-
-        assert_eq!(le32m, ElfMachine::I386);
-        assert_eq!(be32m, ElfMachine::I386);
-        assert_eq!(le64m, ElfMachine::I386);
-        assert_eq!(be64m, ElfMachine::I386);
-
-        let mut le32m_out = Vec::new();
-        le32m.to_writer(&mut le32m_out).unwrap();
-        assert_eq!(le32m_out, bytes_le);
-        let mut be32m_out = Vec::new();
-        be32m.to_writer(&mut be32m_out).unwrap();
-        assert_eq!(be32m_out, bytes_be);
-        let mut le64m_out = Vec::new();
-        le64m.to_writer(&mut le64m_out).unwrap();
-        assert_eq!(le64m_out, bytes_le);
-        let mut be64m_out = Vec::new();
-        be64m.to_writer(&mut be64m_out).unwrap();
-    }
-
-    #[test]
-    fn test_elf_version() {
-        let mut bytes_le = &[0x01, 0x00, 0x00, 0x00];
-        let mut bytes_be = &[0x00, 0x00, 0x00, 0x01];
-
-        let le32v = ElfVersion::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be32v = ElfVersion::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-        let le64v = ElfVersion::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be64v = ElfVersion::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-
-        assert_eq!(le32v, ElfVersion::Current);
-        assert_eq!(be32v, ElfVersion::Current);
-        assert_eq!(le64v, ElfVersion::Current);
-        assert_eq!(be64v, ElfVersion::Current);
-
-        let mut le32v_out = Vec::new();
-        le32v.to_writer(&mut le32v_out).unwrap();
-        assert_eq!(le32v_out, bytes_le);
-        let mut be32v_out = Vec::new();
-        be32v.to_writer(&mut be32v_out).unwrap();
-        assert_eq!(be32v_out, bytes_be);
-        let mut le64v_out = Vec::new();
-        le64v.to_writer(&mut le64v_out).unwrap();
-        assert_eq!(le64v_out, bytes_le);
-        let mut be64v_out = Vec::new();
-        be64v.to_writer(&mut be64v_out).unwrap();
-        assert_eq!(be64v_out, bytes_be);
-    }
-
-    #[test]
-    fn test_elf_entry() {
-        let mut bytes_le = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-        let mut bytes_be = &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01];
-
-        let le32e = ElfAddress::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be32e = ElfAddress::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-        let le64e = ElfAddress::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be64e = ElfAddress::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-
-        assert_eq!(le32e.0, 0x04030201);
-        assert_eq!(be32e.0, 0x08070605);
-        assert_eq!(le64e.0, 0x0807060504030201);
-        assert_eq!(be64e.0, 0x0807060504030201);
-
-        let mut le32e_out = Vec::new();
-        le32e.to_writer(&mut le32e_out).unwrap();
-        assert_eq!(le32e_out, bytes_le[..4]);
-        let mut be32e_out = Vec::new();
-        be32e.to_writer(&mut be32e_out).unwrap();
-        assert_eq!(be32e_out, bytes_be[..4]);
-        let mut le64e_out = Vec::new();
-        le64e.to_writer(&mut le64e_out).unwrap();
-        assert_eq!(le64e_out, bytes_le);
-        let mut be64e_out = Vec::new();
-        be64e.to_writer(&mut be64e_out).unwrap();
-        assert_eq!(be64e_out, bytes_be);
-    }
-
-    #[test]
-    fn test_program_header_offset() {
-        let mut bytes_le = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-        let mut bytes_be = &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01];
-
-        let le32o = ElfOffset::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be32o = ElfOffset::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-        let le64o = ElfOffset::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be64o = ElfOffset::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-
-        assert_eq!(le32o.0, 0x04030201);
-        assert_eq!(be32o.0, 0x08070605);
-        assert_eq!(le64o.0, 0x0807060504030201);
-        assert_eq!(be64o.0, 0x0807060504030201);
-
-        let mut le32o_out = Vec::new();
-        le32o.to_writer(&mut le32o_out).unwrap();
-        assert_eq!(le32o_out, bytes_le[..4]);
-        let mut be32o_out = Vec::new();
-        be32o.to_writer(&mut be32o_out).unwrap();
-        assert_eq!(be32o_out, bytes_be[..4]);
-        let mut le64o_out = Vec::new();
-        le64o.to_writer(&mut le64o_out).unwrap();
-        assert_eq!(le64o_out, bytes_le);
-        let mut be64o_out = Vec::new();
-        be64o.to_writer(&mut be64o_out).unwrap();
-        assert_eq!(be64o_out, bytes_be);
-    }
-
-    #[test]
-    fn test_section_header_offset() {
-        let mut bytes_le = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-        let mut bytes_be = &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01];
-
-        let le32o = ElfOffset::<{ ElfClass::Elf32 as u8}, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be32o = ElfOffset::<{ ElfClass::Elf32 as u8}, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-        let le64o = ElfOffset::<{ ElfClass::Elf64 as u8}, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be64o = ElfOffset::<{ ElfClass::Elf64 as u8}, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-
-        assert_eq!(le32o.0, 0x04030201);
-        assert_eq!(be32o.0, 0x08070605);
-        assert_eq!(le64o.0, 0x0807060504030201);
-        assert_eq!(be64o.0, 0x0807060504030201);
-
-        let mut le32o_out = Vec::new();
-        le32o.to_writer(&mut le32o_out).unwrap();
-        assert_eq!(le32o_out, bytes_le[..4]);
-        let mut be32o_out = Vec::new();
-        be32o.to_writer(&mut be32o_out).unwrap();
-        assert_eq!(be32o_out, bytes_be[..4]);
-        let mut le64o_out = Vec::new();
-        le64o.to_writer(&mut le64o_out).unwrap();
-        assert_eq!(le64o_out, bytes_le);
-        let mut be64o_out = Vec::new();
-        be64o.to_writer(&mut be64o_out).unwrap();
-        assert_eq!(be64o_out, bytes_be);
-    }
-
-    #[test]
-    fn test_flags() {
-        let mut bytes_le = &[0x01, 0x02, 0x03, 0x04];
-        let mut bytes_be = &[0x04, 0x03, 0x02, 0x01];
-
-        let le32f = ElfWord::<{ ElfClass::Elf32 as u8}, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be32f = ElfWord::<{ ElfClass::Elf32 as u8}, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-        let le64f = ElfWord::<{ ElfClass::Elf64 as u8}, { ElfDataEncoding::LittleEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_le)).unwrap();
-        let be64f = ElfWord::<{ ElfClass::Elf64 as u8}, { ElfDataEncoding::BigEndian as u8 }>::from_reader(&mut std::io::Cursor::new(&mut bytes_be)).unwrap();
-
-        assert_eq!(le32f.0, 0x04030201);
-        assert_eq!(be32f.0, 0x04030201);
-        assert_eq!(le64f.0, 0x04030201);
-        assert_eq!(be64f.0, 0x04030201);
-
-        let mut le32f_out = Vec::new();
-        le32f.to_writer(&mut le32f_out).unwrap();
-        assert_eq!(le32f_out, bytes_le);
-        let mut be32f_out = Vec::new();
-        be32f.to_writer(&mut be32f_out).unwrap();
-        assert_eq!(be32f_out, bytes_be);
-        let mut le64f_out = Vec::new();
-        le64f.to_writer(&mut le64f_out).unwrap();
-        assert_eq!(le64f_out, bytes_le);
-        let mut be64f_out = Vec::new();
-        be64f.to_writer(&mut be64f_out).unwrap();
-        assert_eq!(be64f_out, bytes_be);
-    }
-
-    #[test]
-    fn test_elf_header_le32() {
-        let le32_id = ElfHeaderIdentifier {
-            magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
-            class: ElfClass::Elf32,
-            data_encoding: ElfDataEncoding::LittleEndian,
-            version: ElfIdentifierVersion::Current,
-            os_abi: ElfOSABI::NoneSystemV,
-            abi_version: ElfByte(0),
-            pad: [ElfByte(0); 7],
         };
+    }
 
-        let le32_hdr = ElfHeader::<
-            { ElfClass::Elf32 as u8 },
-            { ElfDataEncoding::LittleEndian as u8 },
-        > {
-            identifier: le32_id.clone(),
-            r#type: ElfType::Executable,
-            machine: ElfMachine::X86_64,
-            version: ElfVersion::Current,
-            entrypoint: Some(ElfAddress::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0)),
-            program_header_offset: Some(ElfOffset::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0)),
-            section_header_offset: Some(ElfOffset::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0)),
-            flags: ElfWord::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>(0),
-            // NOTE: No extra size, ends at the section name string table index
-            header_size: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(
-                (size_of::<ElfHeaderIdentifier>()
-                    + size_of::<
-                        ElfType<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>,
-                    >()
-                    + size_of::<
-                        ElfMachine<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfVersion<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()) as u16,
-            ),
-            program_header_entry_size: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            program_header_entry_count: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            section_header_entry_size: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            section_header_entry_count: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            section_name_string_table_index: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            data: vec![],
-        };
+    file_test!("tests/corpus/elf/0pack", PACK0);
 
-        let mut le32_bytes = Vec::new();
-        le32_hdr.to_writer(&mut le32_bytes).unwrap();
-        let le32_header_read = ElfHeader::<
-            { ElfClass::Elf32 as u8 },
-            { ElfDataEncoding::LittleEndian as u8 },
-        >::from_reader(&mut std::io::Cursor::new(&mut le32_bytes))
+    file_test!("tests/corpus/elf/7786-utf16le", _7786_utf16le);
+
+    file_test!("tests/corpus/elf/_Exit (42)", _Exit_42_);
+
+    file_test!("tests/corpus/elf/a6ppc.out", a6ppc_out);
+
+    file_test!("tests/corpus/elf/abcde-qt32", abcde_qt32);
+
+    file_test!("tests/corpus/elf/ada_test_dwarf", ada_test_dwarf);
+
+    file_test!("tests/corpus/elf/allxmm", allxmm);
+
+    file_test!(
+        "tests/corpus/elf/analysis/001.make.elf.x86_64",
+        _001_make_elf_x86_64
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/6921737e-08e3-11e6-998c-a8ddd566ab1c.jpg",
+        _6921737e_08e3_11e6_998c_a8ddd566ab1c_jpg
+    );
+
+    file_test!("tests/corpus/elf/analysis/a.out.asan", a_out_asan);
+
+    file_test!("tests/corpus/elf/analysis/a.out.cpp", a_out_cpp);
+
+    file_test!("tests/corpus/elf/analysis/a.out.fullrel", a_out_fullrel);
+
+    file_test!(
+        "tests/corpus/elf/analysis/a.out.partialrel",
+        a_out_partialrel
+    );
+
+    file_test!("tests/corpus/elf/analysis/arm-ls", arm_ls);
+
+    file_test!("tests/corpus/elf/analysis/arm-relocs", arm_relocs);
+
+    file_test!("tests/corpus/elf/analysis/arm_32_flags0", arm_32_flags0);
+
+    file_test!("tests/corpus/elf/analysis/armcall", armcall);
+
+    file_test!("tests/corpus/elf/analysis/bigswitch_x86", bigswitch_x86);
+
+    file_test!(
+        "tests/corpus/elf/analysis/bigswitch_x86_64",
+        bigswitch_x86_64
+    );
+
+    file_test!("tests/corpus/elf/analysis/bug-it-bb", bug_it_bb);
+
+    file_test!(
+        "tests/corpus/elf/analysis/bugurtos-avr.elf",
+        bugurtos_avr_elf
+    );
+
+    file_test!("tests/corpus/elf/analysis/busybox-mips", busybox_mips);
+
+    file_test!(
+        "tests/corpus/elf/analysis/busybox-mips-phdr",
+        busybox_mips_phdr
+    );
+
+    file_test!("tests/corpus/elf/analysis/busybox.m68k", busybox_m68k);
+
+    file_test!("tests/corpus/elf/analysis/callback.elf", callback_elf);
+
+    file_test!("tests/corpus/elf/analysis/calls_x64", calls_x64);
+
+    file_test!("tests/corpus/elf/analysis/candypop", candypop);
+
+    file_test!("tests/corpus/elf/analysis/ch2.bin", ch2_bin);
+
+    file_test!("tests/corpus/elf/analysis/ch23.bin", ch23_bin);
+
+    file_test!("tests/corpus/elf/analysis/clark", clark);
+
+    file_test!("tests/corpus/elf/analysis/class_dlang", class_dlang);
+
+    file_test!("tests/corpus/elf/analysis/class_pascal", class_pascal);
+
+    file_test!("tests/corpus/elf/analysis/classes_Polygon", classes_Polygon);
+
+    file_test!("tests/corpus/elf/analysis/compiled.elf", compiled_elf);
+
+    file_test!("tests/corpus/elf/analysis/core.1159", core_1159);
+
+    file_test!("tests/corpus/elf/analysis/crackmips", crackmips);
+
+    file_test!("tests/corpus/elf/analysis/cris-dosfsck", cris_dosfsck);
+
+    file_test!("tests/corpus/elf/analysis/custom_ldscript", custom_ldscript);
+
+    file_test!(
+        "tests/corpus/elf/analysis/dummy_secnames.elf",
+        dummy_secnames_elf
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/dummy_secvals.elf",
+        dummy_secvals_elf
+    );
+
+    file_test!("tests/corpus/elf/analysis/dummy_shnum.elf", dummy_shnum_elf);
+
+    file_test!("tests/corpus/elf/analysis/dwarf_load", dwarf_load);
+
+    file_test!("tests/corpus/elf/analysis/dwarftest", dwarftest);
+
+    file_test!("tests/corpus/elf/analysis/dynamic-poffset", dynamic_poffset);
+
+    file_test!("tests/corpus/elf/analysis/dynimports", dynimports);
+
+    file_test!("tests/corpus/elf/analysis/elf-nx", elf_nx);
+
+    file_test!(
+        "tests/corpus/elf/analysis/elf-ppc-execstack",
+        elf_ppc_execstack
+    );
+
+    file_test!("tests/corpus/elf/analysis/elf-relro", elf_relro);
+
+    file_test!(
+        "tests/corpus/elf/analysis/elf-sparc-execstack",
+        elf_sparc_execstack
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/elf-virtualtable",
+        elf_virtualtable
+    );
+
+    file_test!("tests/corpus/elf/analysis/elf-xnorelro", elf_xnorelro);
+
+    file_test!("tests/corpus/elf/analysis/elf_overlapped", elf_overlapped);
+
+    file_test!("tests/corpus/elf/analysis/example.elf", example_elf);
+
+    file_test!("tests/corpus/elf/analysis/fast", fast);
+
+    file_test!(
+        "tests/corpus/elf/analysis/fedora_35_x86_64bit_ls",
+        fedora_35_x86_64bit_ls
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/filetime.c-clang-x64-O0.o",
+        filetime_c_clang_x64_O0_o
+    );
+
+    file_test!("tests/corpus/elf/analysis/go_stripped", go_stripped);
+
+    file_test!("tests/corpus/elf/analysis/go_stripped2", go_stripped2);
+
+    file_test!(
+        "tests/corpus/elf/analysis/graalvm-example-truncated",
+        graalvm_example_truncated
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/guess-number-riscv64",
+        guess_number_riscv64
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-android-arm",
+        hello_android_arm
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-android-mips",
+        hello_android_mips
+    );
+
+    file_test!("tests/corpus/elf/analysis/hello-arm32", hello_arm32);
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-freebsd-x86_64",
+        hello_freebsd_x86_64
+    );
+
+    file_test!("tests/corpus/elf/analysis/hello-hpux-ia64", hello_hpux_ia64);
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-linux-i386-pie",
+        hello_linux_i386_pie
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-linux-i386nold",
+        hello_linux_i386nold
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-linux-x86_64",
+        hello_linux_x86_64
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-netbsd-x86_64",
+        hello_netbsd_x86_64
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-objc-linux",
+        hello_objc_linux
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/hello-openbsd-x86_64",
+        hello_openbsd_x86_64
+    );
+
+    file_test!("tests/corpus/elf/analysis/hello-swift", hello_swift);
+
+    file_test!("tests/corpus/elf/analysis/hello-utf-16", hello_utf_16);
+
+    file_test!("tests/corpus/elf/analysis/hello-utf-16le", hello_utf_16le);
+
+    file_test!("tests/corpus/elf/analysis/hello-utf-32", hello_utf_32);
+
+    file_test!("tests/corpus/elf/analysis/hello-utf-32le", hello_utf_32le);
+
+    file_test!(
+        "tests/corpus/elf/analysis/hexagon-hello-loop",
+        hexagon_hello_loop
+    );
+
+    file_test!("tests/corpus/elf/analysis/libsimplejni.so", libsimplejni_so);
+
+    file_test!(
+        "tests/corpus/elf/analysis/libstagefright_soft_g711dec.so",
+        libstagefright_soft_g711dec_so
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/linux_x64_endbr64",
+        linux_x64_endbr64
+    );
+
+    file_test!("tests/corpus/elf/analysis/longsym", longsym);
+
+    file_test!("tests/corpus/elf/analysis/ls-alxchk", ls_alxchk);
+
+    file_test!("tests/corpus/elf/analysis/ls-fedora29", ls_fedora29);
+
+    file_test!(
+        "tests/corpus/elf/analysis/ls-linux-x86_64-zlul",
+        ls_linux_x86_64_zlul
+    );
+
+    file_test!("tests/corpus/elf/analysis/ls-linux64", ls_linux64);
+
+    file_test!("tests/corpus/elf/analysis/ls-ppc-debian", ls_ppc_debian);
+
+    file_test!("tests/corpus/elf/analysis/ls2", ls2);
+
+    file_test!("tests/corpus/elf/analysis/ls_main_bug", ls_main_bug);
+
+    file_test!("tests/corpus/elf/analysis/main", main);
+
+    file_test!("tests/corpus/elf/analysis/main-g", main_g);
+
+    file_test!("tests/corpus/elf/analysis/main_nosect", main_nosect);
+
+    file_test!("tests/corpus/elf/analysis/main_structure", main_structure);
+
+    file_test!("tests/corpus/elf/analysis/main_wrong_sect", main_wrong_sect);
+
+    file_test!("tests/corpus/elf/analysis/mips-hello", mips_hello);
+
+    file_test!("tests/corpus/elf/analysis/mips-main", mips_main);
+
+    file_test!("tests/corpus/elf/analysis/mips.elf", mips_elf);
+
+    file_test!(
+        "tests/corpus/elf/analysis/mips64r2-busybox",
+        mips64r2_busybox
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/mips64r2-busybox-loongson",
+        mips64r2_busybox_loongson
+    );
+
+    file_test!("tests/corpus/elf/analysis/mips64r2-cc1", mips64r2_cc1);
+
+    file_test!(
+        "tests/corpus/elf/analysis/mips64r2-ld-2.28.so",
+        mips64r2_ld_2_28_so
+    );
+
+    file_test!("tests/corpus/elf/analysis/mipsbe-busybox", mipsbe_busybox);
+
+    file_test!("tests/corpus/elf/analysis/mipsbe-ip", mipsbe_ip);
+
+    file_test!("tests/corpus/elf/analysis/mipsbe-ubusd", mipsbe_ubusd);
+
+    file_test!(
+        "tests/corpus/elf/analysis/mobile_bank.45115ff5f655d94fc26cb5244928b3fc",
+        mobile_bank_45115ff5f655d94fc26cb5244928b3fc
+    );
+
+    file_test!("tests/corpus/elf/analysis/movfuscator", movfuscator);
+
+    file_test!("tests/corpus/elf/analysis/no_sechdr.elf", no_sechdr_elf);
+
+    file_test!("tests/corpus/elf/analysis/no_sections.elf", no_sections_elf);
+
+    file_test!("tests/corpus/elf/analysis/noreturn", analysis_noreturn);
+
+    file_test!("tests/corpus/elf/analysis/phdr-override", phdr_override);
+
+    file_test!("tests/corpus/elf/analysis/pid_stripped", pid_stripped);
+
+    file_test!("tests/corpus/elf/analysis/pie", pie);
+
+    file_test!("tests/corpus/elf/analysis/pie-main", pie_main);
+
+    file_test!(
+        "tests/corpus/elf/analysis/rawmem.c-gcc-x64-O3.o",
+        rawmem_c_gcc_x64_O3_o
+    );
+
+    file_test!("tests/corpus/elf/analysis/reference.out", reference_out);
+
+    file_test!("tests/corpus/elf/analysis/regdump.elf", regdump_elf);
+
+    file_test!(
+        "tests/corpus/elf/analysis/risky-hitcon-riscv64",
+        risky_hitcon_riscv64
+    );
+
+    file_test!("tests/corpus/elf/analysis/rust_full", rust_full);
+
+    file_test!(
+        "tests/corpus/elf/analysis/self-ref-typedef",
+        self_ref_typedef
+    );
+
+    file_test!("tests/corpus/elf/analysis/serial", serial);
+
+    file_test!("tests/corpus/elf/analysis/simple.elf", simple_elf);
+
+    file_test!("tests/corpus/elf/analysis/simple64.elf", simple64_elf);
+
+    file_test!("tests/corpus/elf/analysis/simpleARM.elf", simpleARM_elf);
+
+    file_test!("tests/corpus/elf/analysis/simpleARM2.elf", simpleARM2_elf);
+
+    file_test!("tests/corpus/elf/analysis/spurious-relocs", spurious_relocs);
+
+    file_test!("tests/corpus/elf/analysis/standard.elf", standard_elf);
+
+    file_test!("tests/corpus/elf/analysis/symtrash", symtrash);
+
+    file_test!("tests/corpus/elf/analysis/test.obj", test_obj);
+
+    file_test!(
+        "tests/corpus/elf/analysis/test_hex_search_issues",
+        test_hex_search_issues
+    );
+
+    file_test!("tests/corpus/elf/analysis/thumb", thumb);
+
+    file_test!("tests/corpus/elf/analysis/tiny-crackme", tiny_crackme);
+
+    file_test!(
+        "tests/corpus/elf/analysis/tiny-crackme-vm-x86_64",
+        tiny_crackme_vm_x86_64
+    );
+
+    file_test!("tests/corpus/elf/analysis/tiny1", tiny1);
+
+    file_test!(
+        "tests/corpus/elf/analysis/tiny1@invalid_addr",
+        tiny1_invalid_addr
+    );
+
+    file_test!("tests/corpus/elf/analysis/true32", analysis_true32);
+
+    file_test!("tests/corpus/elf/analysis/unoriginal", unoriginal);
+
+    file_test!("tests/corpus/elf/analysis/x64-fork-test", x64_fork_test);
+
+    file_test!("tests/corpus/elf/analysis/x64-loop", x64_loop);
+
+    file_test!("tests/corpus/elf/analysis/x64-rep-stosq", x64_rep_stosq);
+
+    file_test!("tests/corpus/elf/analysis/x64-simple", x64_simple);
+
+    file_test!(
+        "tests/corpus/elf/analysis/x86-helloworld-clang",
+        x86_helloworld_clang
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/x86-helloworld-gcc",
+        x86_helloworld_gcc
+    );
+
+    file_test!(
+        "tests/corpus/elf/analysis/x86-helloworld-phdr",
+        x86_helloworld_phdr
+    );
+
+    file_test!("tests/corpus/elf/analysis/x86-jmpeax", x86_jmpeax);
+
+    file_test!("tests/corpus/elf/analysis/x86-simple", x86_simple);
+
+    file_test!(
+        "tests/corpus/elf/analysis/x86_cfg_node_details_test",
+        x86_cfg_node_details_test
+    );
+
+    file_test!("tests/corpus/elf/analysis/x86_cfg_test", x86_cfg_test);
+
+    file_test!(
+        "tests/corpus/elf/analysis/x86_icfg_malloc_test",
+        x86_icfg_malloc_test
+    );
+
+    file_test!("tests/corpus/elf/analysis/x86_icfg_test", x86_icfg_test);
+
+    file_test!("tests/corpus/elf/analysis/xrefpic", xrefpic);
+
+    file_test!("tests/corpus/elf/analysis/zigs", zigs);
+
+    file_test!("tests/corpus/elf/analysis/zigs_stripped", zigs_stripped);
+
+    file_test!("tests/corpus/elf/arch-x86_64-ls", arch_x86_64_ls);
+
+    file_test!("tests/corpus/elf/arg", arg);
+
+    file_test!("tests/corpus/elf/arg_down_32", arg_down_32);
+
+    file_test!("tests/corpus/elf/arg_down_prop", arg_down_prop);
+
+    file_test!("tests/corpus/elf/arm-init", arm_init);
+
+    file_test!("tests/corpus/elf/arm1.bin", arm1_bin);
+
+    file_test!("tests/corpus/elf/arm32esilcrash", arm32esilcrash);
+
+    file_test!("tests/corpus/elf/avr-sbrx-rjmp.elf", avr_sbrx_rjmp_elf);
+
+    file_test!("tests/corpus/elf/back1", back1);
+
+    file_test!("tests/corpus/elf/bash", bash);
+
+    file_test!(
+        "tests/corpus/elf/bashbot.arm.gcc.O0.elf",
+        bashbot_arm_gcc_O0_elf
+    );
+
+    file_test!(
+        "tests/corpus/elf/bashbot.x86_64.O0.elf",
+        bashbot_x86_64_O0_elf
+    );
+
+    file_test!("tests/corpus/elf/before-after-main", before_after_main);
+
+    file_test!("tests/corpus/elf/boa-mips", boa_mips);
+
+    file_test!("tests/corpus/elf/bomb", bomb);
+
+    file_test!("tests/corpus/elf/busybox-phdr-shdr", busybox_phdr_shdr);
+
+    file_test!("tests/corpus/elf/busybox-powerpc", busybox_powerpc);
+
+    file_test!("tests/corpus/elf/calc.file", calc_file);
+
+    file_test!(
+        "tests/corpus/elf/calculate-freebsd-x64",
+        calculate_freebsd_x64
+    );
+
+    file_test!("tests/corpus/elf/ch25.bin", ch25_bin);
+
+    file_test!("tests/corpus/elf/class_test", class_test);
+
+    file_test!("tests/corpus/elf/constr_type", constr_type);
+
+    file_test!("tests/corpus/elf/core/core-linux-arm32", core_linux_arm32);
+
+    file_test!("tests/corpus/elf/core/core-linux-arm64", core_linux_arm64);
+
+    file_test!("tests/corpus/elf/core/core-linux-x86", core_linux_x86);
+
+    file_test!("tests/corpus/elf/core/core-linux-x86_64", core_linux_x86_64);
+
+    file_test!("tests/corpus/elf/core/crash-linux-arm32", crash_linux_arm32);
+
+    file_test!("tests/corpus/elf/core/crash-linux-arm64", crash_linux_arm64);
+
+    file_test!("tests/corpus/elf/core/crash-linux-x86", crash_linux_x86);
+
+    file_test!(
+        "tests/corpus/elf/core/crash-linux-x86_64",
+        crash_linux_x86_64
+    );
+
+    file_test!("tests/corpus/elf/crackme", crackme);
+
+    file_test!("tests/corpus/elf/crackme0x00b", crackme0x00b);
+
+    file_test!("tests/corpus/elf/crackme0x05", crackme0x05);
+
+    file_test!("tests/corpus/elf/dectest32", dectest32);
+
+    file_test!("tests/corpus/elf/dectest64", dectest64);
+
+    file_test!("tests/corpus/elf/demangle-test-cpp", demangle_test_cpp);
+
+    file_test!("tests/corpus/elf/double_ptr", double_ptr);
+
+    file_test!("tests/corpus/elf/dwarf/static_var", static_var);
+
+    file_test!(
+        "tests/corpus/elf/dwarf2_many_comp_units.elf",
+        dwarf2_many_comp_units_elf
+    );
+
+    file_test!("tests/corpus/elf/dwarf3_c.elf", dwarf3_c_elf);
+
+    file_test!(
+        "tests/corpus/elf/dwarf3_c.elf.patched0",
+        dwarf3_c_elf_patched0
+    );
+
+    file_test!("tests/corpus/elf/dwarf3_cpp.elf", dwarf3_cpp_elf);
+
+    file_test!(
+        "tests/corpus/elf/dwarf3_cpp.elf.patched0",
+        dwarf3_cpp_elf_patched0
+    );
+
+    file_test!(
+        "tests/corpus/elf/dwarf3_many_comp_units.elf",
+        dwarf3_many_comp_units_elf
+    );
+
+    file_test!(
+        "tests/corpus/elf/dwarf4_many_comp_units.elf",
+        dwarf4_many_comp_units_elf
+    );
+
+    file_test!(
+        "tests/corpus/elf/dwarf4_multidir_comp_units",
+        dwarf4_multidir_comp_units
+    );
+
+    file_test!("tests/corpus/elf/dwarf_attr_check", dwarf_attr_check);
+
+    file_test!(
+        "tests/corpus/elf/dwarf_fuzzed_abbrev_empty",
+        dwarf_fuzzed_abbrev_empty
+    );
+
+    file_test!("tests/corpus/elf/dwarf_go_tree", dwarf_go_tree);
+
+    file_test!("tests/corpus/elf/dwarf_rust_bubble", dwarf_rust_bubble);
+
+    file_test!(
+        "tests/corpus/elf/dwarf_test_func_patched",
+        dwarf_test_func_patched
+    );
+
+    file_test!("tests/corpus/elf/echo", echo);
+
+    file_test!("tests/corpus/elf/echo-bin", echo_bin);
+
+    file_test!(
+        "tests/corpus/elf/elf-Linux-SparcV8-bash",
+        elf_Linux_SparcV8_bash
+    );
+
+    file_test!(
+        "tests/corpus/elf/elf-solaris-sparc-ls",
+        elf_solaris_sparc_ls
+    );
+
+    file_test!("tests/corpus/elf/elf_one_symbol_shdr", elf_one_symbol_shdr);
+
+    file_test!(
+        "tests/corpus/elf/elf_one_symbol_shdr1",
+        elf_one_symbol_shdr1
+    );
+
+    file_test!("tests/corpus/elf/elf_stripped", elf_stripped);
+
+    file_test!("tests/corpus/elf/emulateme.arm32", emulateme_arm32);
+
+    file_test!("tests/corpus/elf/emulateme.arm64", emulateme_arm64);
+
+    file_test!("tests/corpus/elf/emulateme.x86", emulateme_x86);
+
+    file_test!("tests/corpus/elf/emulateme_vfp.arm32", emulateme_vfp_arm32);
+
+    file_test!("tests/corpus/elf/endbr-main", endbr_main);
+
+    file_test!("tests/corpus/elf/errno", errno);
+
+    file_test!("tests/corpus/elf/ezpz", ezpz);
+
+    file_test!("tests/corpus/elf/fcn_in_test.elf", fcn_in_test_elf);
+
+    file_test!("tests/corpus/elf/fedora_32_bin_ls", fedora_32_bin_ls);
+
+    file_test!(
+        "tests/corpus/elf/find_x86-sok_gcc_m32_O2",
+        find_x86_sok_gcc_m32_O2
+    );
+
+    file_test!("tests/corpus/elf/flagspace", flagspace);
+
+    file_test!("tests/corpus/elf/float_ex1/float_ex1_arm", float_ex1_arm);
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_arm_clang.dw.zlib",
+        float_ex1_arm_clang_dw_zlib
+    );
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_arm_clang.dw.zstd",
+        float_ex1_arm_clang_dw_zstd
+    );
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_arm_nodebug",
+        float_ex1_arm_nodebug
+    );
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_arm_stripped",
+        float_ex1_arm_stripped
+    );
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_buildid",
+        float_ex1_buildid
+    );
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_hightec",
+        float_ex1_hightec
+    );
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_split-dwarf",
+        float_ex1_split_dwarf
+    );
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_split-dwarf.debug",
+        float_ex1_split_dwarf_debug
+    );
+
+    file_test!(
+        "tests/corpus/elf/float_ex1/float_ex1_tricore_gcc",
+        float_ex1_tricore_gcc
+    );
+
+    file_test!("tests/corpus/elf/float_point", float_point);
+
+    file_test!("tests/corpus/elf/follow_ptr", follow_ptr);
+
+    file_test!("tests/corpus/elf/format", format);
+
+    file_test!("tests/corpus/elf/forward1", forward1);
+
+    file_test!("tests/corpus/elf/game_of_thrones", game_of_thrones);
+
+    file_test!("tests/corpus/elf/glibc-heap-2.27", glibc_heap_2_27);
+
+    file_test!("tests/corpus/elf/glibc-heap-2.31", glibc_heap_2_31);
+
+    file_test!("tests/corpus/elf/glibc-heap-2.32", glibc_heap_2_32);
+
+    file_test!(
+        "tests/corpus/elf/graphascii.c-clang-arm64-O0.o",
+        graphascii_c_clang_arm64_O0_o
+    );
+
+    file_test!(
+        "tests/corpus/elf/graphascii.c-gcc-arm64-O0.o",
+        graphascii_c_gcc_arm64_O0_o
+    );
+
+    file_test!("tests/corpus/elf/hello-freebsd-x64", hello_freebsd_x64);
+
+    file_test!("tests/corpus/elf/hello.ppc", hello_ppc);
+
+    file_test!("tests/corpus/elf/hello.sysz", hello_sysz);
+
+    file_test!("tests/corpus/elf/hello_world", hello_world);
+
+    file_test!("tests/corpus/elf/hello_world32", hello_world32);
+
+    file_test!("tests/corpus/elf/hexagon/hexagon-plt", hexagon_plt);
+
+    file_test!("tests/corpus/elf/hexagon/relocs", relocs);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/brev", brev);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/circ", circ);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/dual_stores", dual_stores);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/first", first);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/float_convd", float_convd);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/float_convs", float_convs);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/float_madds", float_madds);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/fpstuff", fpstuff);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/hex_sigsegv", hex_sigsegv);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/hvx_histogram", hvx_histogram);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/hvx_misc", hvx_misc);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/invalid-slots", invalid_slots);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/linux-madvise", linux_madvise);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/linux-test", linux_test);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/load_align", load_align);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/load_unpack", load_unpack);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/mem_noshuf", mem_noshuf);
+
+    file_test!(
+        "tests/corpus/elf/hexagon/rzil/mem_noshuf_exception",
+        mem_noshuf_exception
+    );
+
+    file_test!("tests/corpus/elf/hexagon/rzil/misc", misc);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/multi_result", multi_result);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/overflow", overflow);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/preg_alias", preg_alias);
+
+    file_test!(
+        "tests/corpus/elf/hexagon/rzil/read_write_overlap",
+        read_write_overlap
+    );
+
+    file_test!("tests/corpus/elf/hexagon/rzil/reg_mut", reg_mut);
+
+    file_test!(
+        "tests/corpus/elf/hexagon/rzil/scatter_gather",
+        scatter_gather
+    );
+
+    file_test!("tests/corpus/elf/hexagon/rzil/sha1", sha1);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/sha512", sha512);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/sigbus", sigbus);
+
+    file_test!(
+        "tests/corpus/elf/hexagon/rzil/signal_context",
+        signal_context
+    );
+
+    file_test!("tests/corpus/elf/hexagon/rzil/signals", signals);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test-mmap", test_mmap);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test-vma", test_vma);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_abs", test_abs);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_bitcnt", test_bitcnt);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_bitsplit", test_bitsplit);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_call", test_call);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_clobber", test_clobber);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_cmp", test_cmp);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_dotnew", test_dotnew);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_ext", test_ext);
+
+    file_test!(
+        "tests/corpus/elf/hexagon/rzil/test_fibonacci",
+        test_fibonacci
+    );
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_hl", test_hl);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_hwloops", test_hwloops);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_jmp", test_jmp);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_lsr", test_lsr);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_mpyi", test_mpyi);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_packet", test_packet);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_reorder", test_reorder);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_round", test_round);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_vavgw", test_vavgw);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_vcmpb", test_vcmpb);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_vcmpw", test_vcmpw);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_vlsrw", test_vlsrw);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_vmaxh", test_vmaxh);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_vminh", test_vminh);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_vpmpyh", test_vpmpyh);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/test_vspliceb", test_vspliceb);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/usr", usr);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/v68_hvx", v68_hvx);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/v68_scalar", v68_scalar);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/v69_hvx", v69_hvx);
+
+    file_test!("tests/corpus/elf/hexagon/rzil/v73_scalar", v73_scalar);
+
+    file_test!(
+        "tests/corpus/elf/hexagon/rzil/vector_add_int",
+        vector_add_int
+    );
+
+    file_test!("tests/corpus/elf/ifunc_rel64", ifunc_rel64);
+
+    file_test!("tests/corpus/elf/infinite-loop.bf", infinite_loop_bf);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x00", crackme0x00);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x01", crackme0x01);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x02", crackme0x02);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x03", crackme0x03);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x04", crackme0x04);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x05", ioli_crackme0x05);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x06", crackme0x06);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x07", crackme0x07);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x08", crackme0x08);
+
+    file_test!("tests/corpus/elf/ioli/crackme0x09", crackme0x09);
+
+    file_test!("tests/corpus/elf/ip-riscv", ip_riscv);
+
+    file_test!("tests/corpus/elf/jni/jniO0-arm64", jniO0_arm64);
+
+    file_test!("tests/corpus/elf/jni/jniO0-mips", jniO0_mips);
+
+    file_test!("tests/corpus/elf/jni/jniO0-x86", jniO0_x86);
+
+    file_test!("tests/corpus/elf/jni/jniO2-arm64", jniO2_arm64);
+
+    file_test!("tests/corpus/elf/jni/jniO2-mips", jniO2_mips);
+
+    file_test!("tests/corpus/elf/jni/jniO2-x86", jniO2_x86);
+
+    file_test!("tests/corpus/elf/l2rbin", l2rbin);
+
+    file_test!("tests/corpus/elf/lab1B", lab1B);
+
+    file_test!("tests/corpus/elf/lab2", lab2);
+
+    file_test!("tests/corpus/elf/ld-2.27.so", ld_2_27_so);
+
+    file_test!("tests/corpus/elf/ld-2.31.so", ld_2_31_so);
+
+    file_test!("tests/corpus/elf/ld-2.32.so", ld_2_32_so);
+
+    file_test!(
+        "tests/corpus/elf/ld-uClibc-0.9.33.2.so",
+        ld_uClibc_0_9_33_2_so
+    );
+
+    file_test!("tests/corpus/elf/libarm64.so", libarm64_so);
+
+    file_test!("tests/corpus/elf/libc-2.27.so", libc_2_27_so);
+
+    file_test!("tests/corpus/elf/libc-2.31.so", libc_2_31_so);
+
+    file_test!("tests/corpus/elf/libc-2.32.so", libc_2_32_so);
+
+    file_test!("tests/corpus/elf/libc.so.0", libc_so_0);
+
+    file_test!("tests/corpus/elf/libc.so.6", libc_so_6);
+
+    file_test!("tests/corpus/elf/libexploit.so", libexploit_so);
+
+    file_test!("tests/corpus/elf/libmagic.so", libmagic_so);
+
+    file_test!(
+        "tests/corpus/elf/libmemalloc-dump-mem",
+        libmemalloc_dump_mem
+    );
+
+    file_test!("tests/corpus/elf/librsjni_androix.so", librsjni_androix_so);
+
+    file_test!(
+        "tests/corpus/elf/libshella-2.10.3.1.so",
+        libshella_2_10_3_1_so
+    );
+
+    file_test!("tests/corpus/elf/libstdc++.so.6", libstdc___so_6);
+
+    file_test!("tests/corpus/elf/libverifyPass.so", libverifyPass_so);
+
+    file_test!("tests/corpus/elf/license_1.out", license_1_out);
+
+    file_test!(
+        "tests/corpus/elf/linux-example-x86-32.ko",
+        linux_example_x86_32_ko
+    );
+
+    file_test!("tests/corpus/elf/long-symbol.elf", long_symbol_elf);
+
+    file_test!("tests/corpus/elf/ls", ls);
+
+    file_test!("tests/corpus/elf/ls-cet", ls_cet);
+
+    file_test!("tests/corpus/elf/ls.odd", ls_odd);
+
+    file_test!("tests/corpus/elf/mentalminer", mentalminer);
+
+    file_test!("tests/corpus/elf/mips-mozi", mips_mozi);
+
+    file_test!("tests/corpus/elf/mipsloop", mipsloop);
+
+    file_test!("tests/corpus/elf/mosquito-ppc64le", mosquito_ppc64le);
+
+    file_test!("tests/corpus/elf/movstr", movstr);
+
+    file_test!("tests/corpus/elf/msp430.elf", msp430_elf);
+
+    file_test!("tests/corpus/elf/mtk-su", mtk_su);
+
+    file_test!(
+        "tests/corpus/elf/netbsd-calculate-x64",
+        netbsd_calculate_x64
+    );
+
+    file_test!("tests/corpus/elf/netbsd-hello-x64", netbsd_hello_x64);
+
+    file_test!("tests/corpus/elf/noreturn", noreturn);
+
+    file_test!(
+        "tests/corpus/elf/openbsd-arm64-nobtcfi",
+        openbsd_arm64_nobtcfi
+    );
+
+    file_test!(
+        "tests/corpus/elf/openbsd-calculate-x64",
+        openbsd_calculate_x64
+    );
+
+    file_test!("tests/corpus/elf/openbsd-hello-x64", openbsd_hello_x64);
+
+    file_test!("tests/corpus/elf/overlapped-segment", overlapped_segment);
+
+    file_test!("tests/corpus/elf/padding_in_func", padding_in_func);
+
+    file_test!("tests/corpus/elf/pngrutil_o", pngrutil_o);
+
+    file_test!(
+        "tests/corpus/elf/powerpc-linux-gnu-symexec-palindrome",
+        powerpc_linux_gnu_symexec_palindrome
+    );
+
+    file_test!("tests/corpus/elf/ppc/asm_tests", asm_tests);
+
+    file_test!("tests/corpus/elf/ppc/emulateme-ppc32be", emulateme_ppc32be);
+
+    file_test!("tests/corpus/elf/ppc/emulateme-ppc32le", emulateme_ppc32le);
+
+    file_test!("tests/corpus/elf/ppc/emulateme-ppc64be", emulateme_ppc64be);
+
+    file_test!("tests/corpus/elf/ppc/emulateme-ppc64le", emulateme_ppc64le);
+
+    file_test!("tests/corpus/elf/ppc/ppc32be_uplifted", ppc32be_uplifted);
+
+    file_test!("tests/corpus/elf/ppc/ppc64le_uplifted", ppc64le_uplifted);
+
+    file_test!("tests/corpus/elf/ppc/ppc_insn_tests", ppc_insn_tests);
+
+    file_test!("tests/corpus/elf/ppc/pseudo_fuzz_tests", pseudo_fuzz_tests);
+
+    file_test!("tests/corpus/elf/ppc64_sudoku_dwarf", ppc64_sudoku_dwarf);
+
+    file_test!("tests/corpus/elf/ppc_classes", ppc_classes);
+
+    file_test!("tests/corpus/elf/r2-dynstr-format", r2_dynstr_format);
+
+    file_test!("tests/corpus/elf/r2pay-arm32.so", r2pay_arm32_so);
+
+    file_test!("tests/corpus/elf/r2pay-arm64.so", r2pay_arm64_so);
+
+    file_test!("tests/corpus/elf/radare2.c.obj", radare2_c_obj);
+
+    file_test!("tests/corpus/elf/redpill", redpill);
+
+    file_test!("tests/corpus/elf/retpoline", retpoline);
+
+    file_test!("tests/corpus/elf/rust", rust);
+
+    file_test!("tests/corpus/elf/sht_null_symbols", sht_null_symbols);
+
+    file_test!("tests/corpus/elf/signed_test", signed_test);
+
+    file_test!(
+        "tests/corpus/elf/simple-hello-world-with-wrong-rela-section-name",
+        simple_hello_world_with_wrong_rela_section_name
+    );
+
+    file_test!(
+        "tests/corpus/elf/simple_malloc_x86_64",
+        simple_malloc_x86_64
+    );
+
+    file_test!("tests/corpus/elf/smallstrings.elf", smallstrings_elf);
+
+    file_test!("tests/corpus/elf/socket-syscall", socket_syscall);
+
+    file_test!(
+        "tests/corpus/elf/special-sym-with-dot.bin",
+        special_sym_with_dot_bin
+    );
+
+    file_test!("tests/corpus/elf/sse2-add", sse2_add);
+
+    file_test!("tests/corpus/elf/static-glibc-2.27", static_glibc_2_27);
+
+    file_test!("tests/corpus/elf/strenc", strenc);
+
+    file_test!("tests/corpus/elf/strenc-ctrlchars", strenc_ctrlchars);
+
+    file_test!(
+        "tests/corpus/elf/strenc-guess-utf32le",
+        strenc_guess_utf32le
+    );
+
+    file_test!("tests/corpus/elf/struct64", struct64);
+
+    file_test!("tests/corpus/elf/struct_2", struct_2);
+
+    file_test!("tests/corpus/elf/struct_sample", struct_sample);
+
+    file_test!(
+        "tests/corpus/elf/switch-hello-world.elf",
+        switch_hello_world_elf
+    );
+
+    file_test!("tests/corpus/elf/sym_version", sym_version);
+
+    file_test!("tests/corpus/elf/syscall_mips", syscall_mips);
+
+    file_test!("tests/corpus/elf/syscall_x86", syscall_x86);
+
+    file_test!("tests/corpus/elf/tcache", tcache);
+
+    file_test!("tests/corpus/elf/tcache-2.27", tcache_2_27);
+
+    file_test!("tests/corpus/elf/test.ko", test_ko);
+
+    file_test!("tests/corpus/elf/test_app2/test_app2.elf", test_app2_elf);
+
+    file_test!("tests/corpus/elf/textile_hitcon2017", textile_hitcon2017);
+
+    file_test!("tests/corpus/elf/tie-test", tie_test);
+
+    file_test!("tests/corpus/elf/true", true);
+
+    file_test!(
+        "tests/corpus/elf/true-invalid-section-offset",
+        true_invalid_section_offset
+    );
+
+    file_test!("tests/corpus/elf/true32", true32);
+
+    file_test!("tests/corpus/elf/ts3server", ts3server);
+
+    file_test!("tests/corpus/elf/two-words", two_words);
+
+    file_test!("tests/corpus/elf/union_sample", union_sample);
+
+    file_test!("tests/corpus/elf/utfbe&bom", utfbe_bom);
+
+    file_test!(
+        "tests/corpus/elf/vars-complex-x86_64-bp",
+        vars_complex_x86_64_bp
+    );
+
+    file_test!(
+        "tests/corpus/elf/vars-complex-x86_64-sp",
+        vars_complex_x86_64_sp
+    );
+
+    file_test!("tests/corpus/elf/vars-mips-bp", vars_mips_bp);
+
+    file_test!("tests/corpus/elf/vars-mips-sp", vars_mips_sp);
+
+    file_test!("tests/corpus/elf/vars-x86_64-bp", vars_x86_64_bp);
+
+    file_test!("tests/corpus/elf/vars-x86_64-sp", vars_x86_64_sp);
+
+    file_test!("tests/corpus/elf/vars_args/example.x64", example_x64);
+
+    file_test!("tests/corpus/elf/varsub", varsub);
+
+    file_test!("tests/corpus/elf/varsub_2", varsub_2);
+
+    file_test!("tests/corpus/elf/vim", vim);
+
+    file_test!("tests/corpus/elf/ymm", ymm);
+
+    pub const TEST_TINY_ELF: &[u8] = include_bytes!("../tests/corpus/elf/analysis/tiny.elf");
+
+    #[test]
+    fn test_tiny_elf() {
+        let mut test = Vec::from(TEST_TINY_ELF);
+        let _ = ElfKind::from_reader_with(
+            &mut std::io::Cursor::new(&mut test),
+            &mut Config::builder()
+                .default_class(ElfClass::Elf32)
+                .default_encoding(ElfDataEncoding::LittleEndian)
+                .ignore([
+                    Error::InvalidClassEncodingPair {
+                        class: ElfClass::Elf32,
+                        encoding: ElfDataEncoding::None,
+                    },
+                    Error::InvalidVersion {
+                        context: ErrorContext::builder().offset(20).build(),
+                    },
+                    Error::Io {
+                        kind: ErrorKind::UnexpectedEof,
+                    },
+                ])
+                .build(),
+        )
         .unwrap();
-        assert_eq!(le32_header_read, le32_hdr);
-    }
-
-    #[test]
-    fn test_elf_header_be32() {
-        let be32 = ElfHeaderIdentifier {
-            magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
-            class: ElfClass::Elf32,
-            data_encoding: ElfDataEncoding::BigEndian,
-            version: ElfIdentifierVersion::Current,
-            os_abi: ElfOSABI::NoneSystemV,
-            abi_version: ElfByte(0),
-            pad: [ElfByte(0); 7],
-        };
-
-        let be32_hdr = ElfHeader::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }> {
-            identifier: be32.clone(),
-            r#type: ElfType::Executable,
-            machine: ElfMachine::X86_64,
-            version: ElfVersion::Current,
-            entrypoint: Some(ElfAddress::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0)),
-            program_header_offset: Some(ElfOffset::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0)),
-            section_header_offset: Some(ElfOffset::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0)),
-            flags: ElfWord::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>(0),
-            // NOTE: No extra size, ends at the section name string table index
-            header_size: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(
-                (size_of::<ElfHeaderIdentifier>()
-                    + size_of::<
-                        ElfType<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
-                    >()
-                    + size_of::<
-                        ElfMachine<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
-                    >()
-                    + size_of::<
-                        ElfVersion<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf32 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()) as u16,
-            ),
-            program_header_entry_size: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            program_header_entry_count: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            section_header_entry_size: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            section_header_entry_count: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            section_name_string_table_index: ElfHalfWord::<
-                { ElfClass::Elf32 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            data: vec![],
-        };
-
-        let mut be32_bytes = Vec::new();
-        be32_hdr.to_writer(&mut be32_bytes).unwrap();
-        let be32_header_read = ElfHeader::<
-            { ElfClass::Elf32 as u8 },
-            { ElfDataEncoding::BigEndian as u8 },
-        >::from_reader(&mut std::io::Cursor::new(&mut be32_bytes))
-        .unwrap();
-        assert_eq!(be32_header_read, be32_hdr);
-    }
-
-    #[test]
-    fn test_elf_header_le64() {
-        let le64_id = ElfHeaderIdentifier {
-            magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
-            class: ElfClass::Elf64,
-            data_encoding: ElfDataEncoding::LittleEndian,
-            version: ElfIdentifierVersion::Current,
-            os_abi: ElfOSABI::NoneSystemV,
-            abi_version: ElfByte(0),
-            pad: [ElfByte(0); 7],
-        };
-
-        let le64_hdr = ElfHeader::<
-            { ElfClass::Elf64 as u8 },
-            { ElfDataEncoding::LittleEndian as u8 },
-        > {
-            identifier: le64_id.clone(),
-            r#type: ElfType::Executable,
-            machine: ElfMachine::X86_64,
-            version: ElfVersion::Current,
-            entrypoint: Some(ElfAddress::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0)),
-            program_header_offset: Some(ElfOffset::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0)),
-            section_header_offset: Some(ElfOffset::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0)),
-            flags: ElfWord::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>(0),
-            // NOTE: No extra size, ends at the section name string table index
-            header_size: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(
-                (size_of::<ElfHeaderIdentifier>()
-                    + size_of::<
-                        ElfType<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>,
-                    >()
-                    + size_of::<
-                        ElfMachine<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfVersion<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::LittleEndian as u8 },
-                        >,
-                    >()) as u16,
-            ),
-            program_header_entry_size: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            program_header_entry_count: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            section_header_entry_size: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            section_header_entry_count: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            section_name_string_table_index: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::LittleEndian as u8 },
-            >(0),
-            data: vec![],
-        };
-
-        let mut le64_bytes = Vec::new();
-        le64_hdr.to_writer(&mut le64_bytes).unwrap();
-        let le64_header_read = ElfHeader::<
-            { ElfClass::Elf64 as u8 },
-            { ElfDataEncoding::LittleEndian as u8 },
-        >::from_reader(&mut std::io::Cursor::new(&mut le64_bytes))
-        .unwrap();
-        assert_eq!(le64_header_read, le64_hdr);
-    }
-
-    #[test]
-    fn test_elf_header_be64() {
-        let be64 = ElfHeaderIdentifier {
-            magic: [ElfByte(0x7f), ElfByte(0x45), ElfByte(0x4c), ElfByte(0x46)],
-            class: ElfClass::Elf64,
-            data_encoding: ElfDataEncoding::BigEndian,
-            version: ElfIdentifierVersion::Current,
-            os_abi: ElfOSABI::NoneSystemV,
-            abi_version: ElfByte(0),
-            pad: [ElfByte(0); 7],
-        };
-
-        let be64_hdr = ElfHeader::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }> {
-            identifier: be64.clone(),
-            r#type: ElfType::Executable,
-            machine: ElfMachine::X86_64,
-            version: ElfVersion::Current,
-            entrypoint: Some(ElfAddress::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0)),
-            program_header_offset: Some(ElfOffset::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0)),
-            section_header_offset: Some(ElfOffset::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0)),
-            flags: ElfWord::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>(0),
-            // NOTE: No extra size, ends at the section name string table index
-            header_size: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(
-                (size_of::<ElfHeaderIdentifier>()
-                    + size_of::<
-                        ElfType<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
-                    >()
-                    + size_of::<
-                        ElfMachine<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
-                    >()
-                    + size_of::<
-                        ElfVersion<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()
-                    + size_of::<
-                        ElfHalfWord<
-                            { ElfClass::Elf64 as u8 },
-                            { ElfDataEncoding::BigEndian as u8 },
-                        >,
-                    >()) as u16,
-            ),
-            program_header_entry_size: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            program_header_entry_count: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            section_header_entry_size: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            section_header_entry_count: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            section_name_string_table_index: ElfHalfWord::<
-                { ElfClass::Elf64 as u8 },
-                { ElfDataEncoding::BigEndian as u8 },
-            >(0),
-            data: vec![],
-        };
-
-        let mut be64_bytes = Vec::new();
-        be64_hdr.to_writer(&mut be64_bytes).unwrap();
-        let be64_header_read = ElfHeader::<
-            { ElfClass::Elf64 as u8 },
-            { ElfDataEncoding::BigEndian as u8 },
-        >::from_reader(&mut std::io::Cursor::new(&mut be64_bytes))
-        .unwrap();
-        assert_eq!(be64_header_read, be64_hdr);
     }
 }
