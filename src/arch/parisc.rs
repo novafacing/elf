@@ -3,14 +3,14 @@
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
-use crate::{base::ElfWord, error::Error, header::elf::ElfHeader, Config, TryFromWithConfig};
+use crate::{base::ElfWord, error::Error, Config, TryFromWithConfig};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
 #[non_exhaustive]
 /// Flags for an ELF header, which may contain processor and OS-specific
 /// flags.
-pub enum ElfHeaderFlagPARISCArchitectureExtension {
+pub enum ElfHeaderFlagPARISCArchitectureVersion {
     /// PA-RISC 1.0
     PaRisc10 = Self::PARISC_1_0,
     /// PA-RISC 1.1
@@ -19,7 +19,7 @@ pub enum ElfHeaderFlagPARISCArchitectureExtension {
     PaRisc20 = Self::PARISC_2_0,
 }
 
-impl ElfHeaderFlagPARISCArchitectureExtension {
+impl ElfHeaderFlagPARISCArchitectureVersion {
     /// PA-RISC 1.0
     pub const PARISC_1_0: u32 = 0x020b;
     /// PA-RISC 1.1
@@ -62,14 +62,16 @@ pub enum ElfHeaderFlagPARISC {
     NoKernelAssistedBranchPrediction = Self::NO_KERNEL_ASSISTED_BRANCH_PREDICTION,
     /// Allow lazy swap for dynamically allocated program segments
     LazySwap = Self::LAZY_SWAP,
-    /// Architecture exensions
-    ArchitectureExtension(ElfHeaderFlagPARISCArchitectureExtension),
+    /// Architecture version
+    ArchitectureVersion(ElfHeaderFlagPARISCArchitectureVersion),
 }
 
 impl ElfHeaderFlagPARISC {
     /// Trap nil pointer dereferences
     pub const TRAP_NIL: u32 = 0x00010000;
-    /// Program uses architecture extensions
+    /// Program uses architecture extensions. If set, a .PARISC.archext section is present
+    /// with at least one 32-bit word which identifies the extensions required by the object file
+    /// (see `ElfHeaderFlagPARISCArchitectureExtension`).
     pub const EXTENSIONS: u32 = 0x00020000;
     /// Program expects little endian mode
     pub const LITTLE_ENDIAN_MODE: u32 = 0x00040000;
@@ -120,10 +122,10 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>>
             flags.push(ElfHeaderFlagPARISC::LazySwap);
         }
 
-        if value.0 & ElfHeaderFlagPARISCArchitectureExtension::MASK != 0 {
-            flags.push(ElfHeaderFlagPARISC::ArchitectureExtension(
-                ElfHeaderFlagPARISCArchitectureExtension::from_u32(
-                    value.0 & ElfHeaderFlagPARISCArchitectureExtension::MASK,
+        if value.0 & ElfHeaderFlagPARISCArchitectureVersion::MASK != 0 {
+            flags.push(ElfHeaderFlagPARISC::ArchitectureVersion(
+                ElfHeaderFlagPARISCArchitectureVersion::from_u32(
+                    value.0 & ElfHeaderFlagPARISCArchitectureVersion::MASK,
                 )
                 .ok_or(Error::InvalidHeaderFlagPariscArchitectureExtensions { value: value.0 })?,
             ))
