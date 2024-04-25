@@ -4,7 +4,10 @@
 
 use error::Error;
 use header::elf::{
-    identification::{ElfClass, ElfDataEncoding, ElfHeaderIdentifier},
+    identification::{
+        ElfClass, ElfDataEncoding, ElfHeaderIdentifier, ELF_CLASS_DEFAULT,
+        ELF_DATA_ENCODING_DEFAULT,
+    },
     ElfHeader, ElfMachine,
 };
 use std::{
@@ -124,7 +127,7 @@ pub struct Config {
     ignore: HashSet<Error>,
     #[builder(default, setter(into, strip_option))]
     /// The machine type of the ELF object currently being decoded
-    machine: Option<ElfMachine>,
+    machine: Option<ElfMachine<ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT>>,
 }
 
 impl Config {
@@ -301,7 +304,8 @@ mod test {
                 #[test]
                 fn [<test_ $name:lower>]() {
                         let mut test = Vec::from([<TEST_ $name:upper>]);
-                        let _ = ElfKind::from_reader(&mut std::io::Cursor::new(&mut test)).unwrap();
+                        let _k = ElfKind::from_reader(&mut std::io::Cursor::new(&mut test)).unwrap();
+                        println!("{}: {:#?}", $file, _k);
                 }
             }
         };

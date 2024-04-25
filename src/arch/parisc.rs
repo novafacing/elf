@@ -1,9 +1,11 @@
 //! Architecture specific definitions for parisc
 
+use std::io::Write;
+
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
-use crate::{base::ElfWord, error::Error, Config, TryFromWithConfig};
+use crate::{base::ElfWord, error::Error, Config, ToWriter, TryFromWithConfig};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
@@ -132,5 +134,17 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>>
         }
 
         Ok(Self { flags, value })
+    }
+}
+
+impl<const EC: u8, const ED: u8, W> ToWriter<W> for ElfHeaderFlagsPARISC<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        self.value.to_writer(writer)?;
+        Ok(())
     }
 }

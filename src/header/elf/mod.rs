@@ -19,7 +19,7 @@ use crate::{
     from_primitive, Config, FromReader, HasWrittenSize, ToWriter, TryFromWithConfig,
 };
 
-use self::identification::ElfHeaderIdentifier;
+use self::identification::{ElfHeaderIdentifier, ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT};
 
 pub mod identification;
 
@@ -498,9 +498,11 @@ where
     fn from_reader_with(reader: &mut R, config: &mut Config) -> Result<Self, Self::Error> {
         let machine = ElfHalfWord::<EC, ED>::from_reader_with(reader, config)?;
 
-        if let Some(machine) = Self::from_u16(machine.0) {
-            config.machine = machine.clone();
-            Ok(machine)
+        if let Some(e_machine) = Self::from_u16(machine.0) {
+            config.machine =
+                ElfMachine::<ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT>::from_u16(machine.0);
+
+            Ok(e_machine)
         } else {
             Err(Error::InvalidMachine {
                 context: ErrorContext::from_reader(reader, size_of::<ElfHalfWord<EC, ED>>())
@@ -640,17 +642,87 @@ pub enum ElfHeaderFlags<const EC: u8, const ED: u8> {
     /// SPARC defines no processor-specific flags but does not specify the value
     /// of this field
     SPARC(ElfWord<EC, ED>),
+    /// Platform-specific flags for SUPER H
+    ///
+    /// SUPER H defines no processor-specific flags but does not specify the value
+    /// of this field
+    SH(ElfWord<EC, ED>),
     /// Platform-specific flags for x86_64
     ///
     /// x86_64 defines no processor-specific flags but does not specify the value
     /// of this field
     X86_64(ElfWord<EC, ED>),
+    /// Platform-specific flags for other platforms
+    Other(ElfWord<EC, ED>),
 }
 
 impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfHeaderFlags<EC, ED> {
     type Error = Error;
 
-    fn try_from_with(value: ElfWord<EC, ED>, config: &mut Config) -> Result<Self, Self::Error> {}
+    fn try_from_with(value: ElfWord<EC, ED>, config: &mut Config) -> Result<Self, Self::Error> {
+        match config.machine {
+            Some(ElfMachine::AARCH64) => Ok(Self::AARCH64(value)),
+            Some(ElfMachine::ARM) => Ok(Self::ARM32(ElfHeaderFlagsARM32::try_from_with(
+                value, config,
+            )?)),
+            Some(ElfMachine::I386) => Ok(Self::I386(value)),
+            // NOTE: ColdFire is the same family according to Wikipedia
+            Some(ElfMachine::M68K) | Some(ElfMachine::COLDFIRE) => Ok(Self::M68K(
+                ElfHeaderFlagsM68K::try_from_with(value, config)?,
+            )),
+            Some(ElfMachine::MIPS) | Some(ElfMachine::MIPS_RS3_LE) | Some(ElfMachine::MIPS_X) => {
+                Ok(Self::MIPS(ElfHeaderFlagsMIPS::try_from_with(
+                    value, config,
+                )?))
+            }
+            Some(ElfMachine::PARISC) => Ok(Self::PARISC(ElfHeaderFlagsPARISC::try_from_with(
+                value, config,
+            )?)),
+            Some(ElfMachine::PPC) => Ok(Self::PPC(value)),
+            Some(ElfMachine::PPC64) => Ok(Self::PPC64(value)),
+            Some(ElfMachine::Riscv) => Ok(Self::RISCV(ElfHeaderFlagsRISCV::try_from_with(
+                value, config,
+            )?)),
+            Some(ElfMachine::S390) => Ok(Self::S390(value)),
+            Some(ElfMachine::SPARC) | Some(ElfMachine::SPARC32PLUS) | Some(ElfMachine::SPARCV9) => {
+                Ok(Self::SPARC(value))
+            }
+            Some(ElfMachine::SH) => Ok(Self::SH(value)),
+            Some(ElfMachine::X86_64) => Ok(Self::X86_64(value)),
+            _ => Ok(Self::Other(value)),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8, W> ToWriter<W> for ElfHeaderFlags<EC, ED>
+where
+    W: Write,
+{
+    type Error = Error;
+
+    fn to_writer(&self, writer: &mut W) -> Result<(), Self::Error> {
+        match self {
+            Self::AARCH64(flags) => flags.to_writer(writer),
+            Self::ARM32(flags) => flags.to_writer(writer),
+            Self::I386(flags) => flags.to_writer(writer),
+            Self::M68K(flags) => flags.to_writer(writer),
+            Self::MIPS(flags) => flags.to_writer(writer),
+            Self::PARISC(flags) => flags.to_writer(writer),
+            Self::PPC(flags) => flags.to_writer(writer),
+            Self::PPC64(flags) => flags.to_writer(writer),
+            Self::RISCV(flags) => flags.to_writer(writer),
+            Self::S390(flags) => flags.to_writer(writer),
+            Self::S390X(flags) => flags.to_writer(writer),
+            Self::SPARC(flags) => flags.to_writer(writer),
+            Self::SH(flags) => flags.to_writer(writer),
+            Self::X86_64(flags) => flags.to_writer(writer),
+            Self::Other(flags) => flags.to_writer(writer),
+        }
+    }
+}
+
+impl<const EC: u8, const ED: u8> HasWrittenSize for ElfHeaderFlags<EC, ED> {
+    const SIZE: usize = size_of::<ElfWord<EC, ED>>();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, TypedBuilder)]
@@ -724,7 +796,7 @@ impl<const EC: u8, const ED: u8> ElfHeader<EC, ED> {
         + ElfAddress::<EC, ED>::SIZE
         + ElfOffset::<EC, ED>::SIZE
         + ElfOffset::<EC, ED>::SIZE
-        + ElfWord::<EC, ED>::SIZE
+        + ElfHeaderFlags::<EC, ED>::SIZE
         + (ElfHalfWord::<EC, ED>::SIZE * 6);
 }
 
@@ -1054,9 +1126,13 @@ mod test {
                     { ElfClass::Elf32 as u8 },
                     { ElfDataEncoding::LittleEndian as u8 },
                 >(0)),
-                flags: ElfWord::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>(
-                    0,
-                ),
+                flags: ElfHeaderFlags::<
+                    { ElfClass::Elf32 as u8 },
+                    { ElfDataEncoding::LittleEndian as u8 },
+                >::X86_64(ElfWord::<
+                    { ElfClass::Elf32 as u8 },
+                    { ElfDataEncoding::LittleEndian as u8 },
+                >(0)),
                 // NOTE: No extra size, ends at the section name string table index
                 header_size:
                     ElfHalfWord::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>(
@@ -1129,7 +1205,13 @@ mod test {
                 { ElfClass::Elf32 as u8 },
                 { ElfDataEncoding::BigEndian as u8 },
             >(0)),
-            flags: ElfWord::<{ ElfClass::Elf32 as u8 }, { ElfDataEncoding::BigEndian as u8 }>(0),
+            flags: ElfHeaderFlags::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >::X86_64(ElfWord::<
+                { ElfClass::Elf32 as u8 },
+                { ElfDataEncoding::BigEndian as u8 },
+            >(0)),
             // NOTE: No extra size, ends at the section name string table index
             header_size: ElfHalfWord::<
                 { ElfClass::Elf32 as u8 },
@@ -1202,9 +1284,13 @@ mod test {
                     { ElfClass::Elf64 as u8 },
                     { ElfDataEncoding::LittleEndian as u8 },
                 >(0)),
-                flags: ElfWord::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>(
-                    0,
-                ),
+                flags: ElfHeaderFlags::<
+                    { ElfClass::Elf64 as u8 },
+                    { ElfDataEncoding::LittleEndian as u8 },
+                >::X86_64(ElfWord::<
+                    { ElfClass::Elf64 as u8 },
+                    { ElfDataEncoding::LittleEndian as u8 },
+                >(0)),
                 // NOTE: No extra size, ends at the section name string table index
                 header_size:
                     ElfHalfWord::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::LittleEndian as u8 }>(
@@ -1277,7 +1363,10 @@ mod test {
                 { ElfClass::Elf64 as u8 },
                 { ElfDataEncoding::BigEndian as u8 },
             >(0)),
-            flags: ElfWord::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>(0),
+            flags: ElfHeaderFlags::<
+                    { ElfClass::Elf64 as u8 },
+                    { ElfDataEncoding::BigEndian as u8 },
+                >::X86_64(ElfWord::<{ ElfClass::Elf64 as u8 }, { ElfDataEncoding::BigEndian as u8 }>(0)),
             // NOTE: No extra size, ends at the section name string table index
             header_size: ElfHalfWord::<
                 { ElfClass::Elf64 as u8 },

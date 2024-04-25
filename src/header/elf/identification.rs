@@ -47,6 +47,13 @@ impl ElfClass {
     pub const ELF_CLASS_DEFAULT: u8 = Self::ELF_CLASS_64;
 }
 
+/// Constant u8 value for ELFCLASS32
+pub const ELF_CLASS_32: u8 = ElfClass::ELF_CLASS_32;
+/// Constant u8 value for ELFCLASS64
+pub const ELF_CLASS_64: u8 = ElfClass::ELF_CLASS_64;
+/// Default u8 value for ELFCLASS
+pub const ELF_CLASS_DEFAULT: u8 = ElfClass::ELF_CLASS_DEFAULT;
+
 impl<R> FromReader<R> for ElfClass
 where
     R: Read + Seek,
@@ -127,6 +134,13 @@ impl ElfDataEncoding {
     /// Default u8 value for ELFDATA2LSB
     pub const ELF_DATA_ENCODING_DEFAULT: u8 = Self::ELF_DATA_ENCODING_BIG_ENDIAN;
 }
+
+/// Constant u8 value for ELFDATA2LSB
+pub const ELF_DATA_ENCODING_LITTLE_ENDIAN: u8 = ElfDataEncoding::ELF_DATA_ENCODING_LITTLE_ENDIAN;
+/// Constant u8 value for ELFDATA2MSB
+pub const ELF_DATA_ENCODING_BIG_ENDIAN: u8 = ElfDataEncoding::ELF_DATA_ENCODING_BIG_ENDIAN;
+/// Default u8 value for ELFDATA
+pub const ELF_DATA_ENCODING_DEFAULT: u8 = ElfDataEncoding::ELF_DATA_ENCODING_DEFAULT;
 
 impl<R> FromReader<R> for ElfDataEncoding
 where
