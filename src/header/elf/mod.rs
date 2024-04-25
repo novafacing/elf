@@ -10,10 +10,13 @@ use std::{
 use typed_builder::TypedBuilder;
 
 use crate::{
-    arch::arm32::ElfHeaderFlagsARM32,
+    arch::{
+        arm32::ElfHeaderFlagsARM32, m68k::ElfHeaderFlagsM68K, mips::ElfHeaderFlagsMIPS,
+        parisc::ElfHeaderFlagsPARISC, riscv::ElfHeaderFlagsRISCV,
+    },
     base::{ElfAddress, ElfByte, ElfHalfWord, ElfOffset, ElfWord},
     error::{Error, ErrorContext},
-    from_primitive, Config, FromReader, HasWrittenSize, ToWriter,
+    from_primitive, Config, FromReader, HasWrittenSize, ToWriter, TryFromWithConfig,
 };
 
 use self::identification::ElfHeaderIdentifier;
@@ -496,6 +499,7 @@ where
         let machine = ElfHalfWord::<EC, ED>::from_reader_with(reader, config)?;
 
         if let Some(machine) = Self::from_u16(machine.0) {
+            config.machine = machine.clone();
             Ok(machine)
         } else {
             Err(Error::InvalidMachine {
@@ -579,24 +583,74 @@ impl<const EC: u8, const ED: u8> HasWrittenSize for ElfVersion<EC, ED> {
 /// Flags for an ELF header, which may contain processor and OS-specific
 /// flags.
 pub enum ElfHeaderFlags<const EC: u8, const ED: u8> {
-    /// Platform-specific flags for ARM32
-    ARM32(ElfHeaderFlagsARM32<EC, ED>),
     /// Platform-specific flags for AARCH64
     ///
     /// AARCH64 defines no processor-specific flags and specifies this field
     /// shall be zero
-    AARCH64 {
-        /// The value of the flags field
-        value: ElfWord<EC, ED>,
-    },
+    AARCH64(ElfWord<EC, ED>),
+    /// Platform-specific flags for ARM32
+    ARM32(ElfHeaderFlagsARM32<EC, ED>),
     /// Platform-specific flags for i386
     ///
     /// i386 defines no processor-specific flags but does not specify the value
     /// of this field
-    I386 {
-        /// The value of the flags field
-        value: ElfWord<EC, ED>,
-    },
+    I386(ElfWord<EC, ED>),
+    /// Platform-specific flags for m68k
+    ///
+    /// m68k defines no processor-specific flags but does not specify the value
+    /// of this field
+    M68K(ElfHeaderFlagsM68K<EC, ED>),
+    /// Platform-specific flags for MIPS
+    ///
+    /// MIPS defines no processor-specific flags but does not specify the value
+    /// of this field
+    MIPS(ElfHeaderFlagsMIPS<EC, ED>),
+    /// Platform-specific flags for PA-RISC
+    ///
+    /// PA-RISC defines no processor-specific flags but does not specify the value
+    /// of this field
+    PARISC(ElfHeaderFlagsPARISC<EC, ED>),
+    /// Platform-specific flags for PPC
+    ///
+    /// PPC defines no processor-specific flags but does not specify the value
+    /// of this field
+    PPC(ElfWord<EC, ED>),
+    /// Platform-specific flags for PPC64
+    ///
+    /// PPC64 defines no processor-specific flags but does not specify the value
+    /// of this field
+    PPC64(ElfWord<EC, ED>),
+    /// Platform-specific flags for RISC-V
+    ///
+    /// RISC-V defines no processor-specific flags but does not specify the value
+    /// of this field
+    RISCV(ElfHeaderFlagsRISCV<EC, ED>),
+    /// Platform-specific flags for S390
+    ///
+    /// S390 defines no processor-specific flags but does not specify the value
+    /// of this field
+    S390(ElfWord<EC, ED>),
+    /// Platform-specific flags for S390X
+    ///
+    /// S390X defines no processor-specific flags but does not specify the value
+    /// of this field
+    S390X(ElfWord<EC, ED>),
+    /// Platform-specific flags for SPARC
+    ///
+    /// SPARC defines no processor-specific flags but does not specify the value
+    /// of this field
+    SPARC(ElfWord<EC, ED>),
+    /// Platform-specific flags for x86_64
+    ///
+    /// x86_64 defines no processor-specific flags but does not specify the value
+    /// of this field
+    X86_64(ElfWord<EC, ED>),
+}
+
+impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfHeaderFlags<EC, ED> {
+    type Error = Error;
+
+    fn try_from_with(value: ElfWord<EC, ED>, config: &mut Config) -> Result<Self, Self::Error> {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, TypedBuilder)]
@@ -625,7 +679,7 @@ pub struct ElfHeader<const EC: u8, const ED: u8> {
     pub section_header_offset: Option<ElfOffset<EC, ED>>,
     /// The processor-specific flags associated with the file.
     /// TODO: Make this a trait abstract over the various architectures' flags
-    pub flags: ElfWord<EC, ED>,
+    pub flags: ElfHeaderFlags<EC, ED>,
     /// The ELF header's size in bytes
     pub header_size: ElfHalfWord<EC, ED>,
     /// The size in bytes of a program header table entry; all entries are the same
@@ -688,7 +742,8 @@ where
         let entrypoint = ElfAddress::<EC, ED>::from_reader_with(reader, config).ok();
         let program_header_offset = ElfOffset::<EC, ED>::from_reader_with(reader, config).ok();
         let section_header_offset = ElfOffset::<EC, ED>::from_reader_with(reader, config).ok();
-        let flags = ElfWord::<EC, ED>::from_reader_with(reader, config)?;
+        let flags_raw = ElfWord::<EC, ED>::from_reader_with(reader, config)?;
+        let flags = ElfHeaderFlags::<EC, ED>::try_from_with(flags_raw, config)?;
         let header_size = ElfHalfWord::<EC, ED>::from_reader_with(reader, config)?;
         let program_header_entry_size = ElfHalfWord::<EC, ED>::from_reader_with(reader, config)?;
         let program_header_entry_count = ElfHalfWord::<EC, ED>::from_reader_with(reader, config)?;

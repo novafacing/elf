@@ -5,7 +5,7 @@
 use error::Error;
 use header::elf::{
     identification::{ElfClass, ElfDataEncoding, ElfHeaderIdentifier},
-    ElfHeader,
+    ElfHeader, ElfMachine,
 };
 use std::{
     collections::HashSet,
@@ -122,6 +122,9 @@ pub struct Config {
     /// and the implementation for each is located where the error would have been raised.
     /// For example, an invalid data encoding may be inferred from the machine field.
     ignore: HashSet<Error>,
+    #[builder(default, setter(into, strip_option))]
+    /// The machine type of the ELF object currently being decoded
+    machine: Option<ElfMachine>,
 }
 
 impl Config {

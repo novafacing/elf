@@ -39,6 +39,10 @@ impl ElfClass {
     pub const ELF_CLASS_32: u8 = Self::Elf32 as u8;
     /// Constant u8 value for ELFCLASS64
     pub const ELF_CLASS_64: u8 = Self::Elf64 as u8;
+    #[cfg(target_pointer_width = "32")]
+    /// Default u8 value for ELFCLASS64
+    pub const ELF_CLASS_DEFAULT: u8 = Self::ELF_CLASS_32;
+    #[cfg(target_pointer_width = "64")]
     /// Default u8 value for ELFCLASS64
     pub const ELF_CLASS_DEFAULT: u8 = Self::ELF_CLASS_64;
 }
@@ -116,8 +120,12 @@ impl ElfDataEncoding {
     pub const ELF_DATA_ENCODING_LITTLE_ENDIAN: u8 = Self::LittleEndian as u8;
     /// Constant u8 value for ELFDATA2MSB
     pub const ELF_DATA_ENCODING_BIG_ENDIAN: u8 = Self::BigEndian as u8;
+    #[cfg(target_endian = "little")]
     /// Default u8 value for ELFDATA2LSB
     pub const ELF_DATA_ENCODING_DEFAULT: u8 = Self::ELF_DATA_ENCODING_LITTLE_ENDIAN;
+    #[cfg(target_endian = "big")]
+    /// Default u8 value for ELFDATA2LSB
+    pub const ELF_DATA_ENCODING_DEFAULT: u8 = Self::ELF_DATA_ENCODING_BIG_ENDIAN;
 }
 
 impl<R> FromReader<R> for ElfDataEncoding

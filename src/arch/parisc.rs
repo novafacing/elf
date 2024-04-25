@@ -1,5 +1,5 @@
 //! Architecture specific definitions for parisc
-//!
+
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 

@@ -197,6 +197,30 @@ pub enum Error {
         /// The invalid value
         value: u32,
     },
+    #[error("Invalid ELF flag value for RISCV architecture {value}")]
+    /// The EF_RISCV_RVC field of the header flags field was invalid
+    InvalidHeaderFlagRiscvRvc {
+        /// The invalid value
+        value: u32,
+    },
+    #[error("Invalid ELF flag value for RISCV architecture {value}")]
+    /// The EF_RISCV_FLOAT_ABI field of the header flags field was invalid
+    InvalidHeaderFlagRiscvFloatAbi {
+        /// The invalid value
+        value: u32,
+    },
+    #[error("Invalid ELF flag value for RISCV architecture {value}")]
+    /// The EF_RISCV_RVE field of the header flags field was invalid
+    InvalidHeaderFlagRiscvEAbi {
+        /// The invalid value
+        value: u32,
+    },
+    #[error("Invalid ELF flag value for RISCV architecture {value}")]
+    /// The EF_RISCV_TSO field of the header flags field was invalid
+    InvalidHeaderFlagRiscvMemoryModel {
+        /// The invalid value
+        value: u32,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialOrd, Ord, TypedBuilder)]
