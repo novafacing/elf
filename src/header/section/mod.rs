@@ -15,6 +15,16 @@ use crate::{
 
 use super::elf::identification::ElfClass;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// The name of an ELF section
+pub struct ElfSectionHeaderName<const ED: u8> {
+    /// The name of the section, which is obtained by indexing into the section header
+    /// table string table
+    pub name: String,
+    /// The raw section header name
+    pub value: ElfWord<{ ElfClass::Elf32 as u8 }, ED>,
+}
+
 from_primitive! {
     #[repr(u32)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -407,7 +417,7 @@ impl<const ED: u8> HasWrittenSize for Elf64SectionHeaderFlags<ED> {
 pub struct Elf32SectionHeader<const ED: u8> {
     /// The name of the section. Its value is an index into the section header string
     /// table section giving the location of a null-terminated string
-    name: ElfWord<{ ElfClass::Elf32 as u8 }, ED>,
+    name: ElfSectionHeaderName<ED>,
     /// The section's contents and semantics
     r#type: ElfSectionHeaderType<{ ElfClass::Elf32 as u8 }, ED>,
     /// Bit-flags that describe miscellaneous attributes

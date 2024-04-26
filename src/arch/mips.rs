@@ -1,11 +1,9 @@
 //! Architecture specific definitions for mips
 
-use std::io::Write;
-
+use crate::{base::ElfWord, error::Error, Config, ToWriter, TryFromWithConfig};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
-
-use crate::{base::ElfWord, error::Error, Config, ToWriter, TryFromWithConfig};
+use std::io::Write;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
@@ -388,4 +386,64 @@ where
         self.value.to_writer(writer)?;
         Ok(())
     }
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+/// Section Header Types
+pub enum ElfSectionheaderTypeMIPS {
+    /// The section contains information about the set of dy- namic shared object
+    /// libraries used when statically linking a program. Each entry contains
+    /// information such as the library name, timestamp, and version. See "Quickstart"
+    /// in Chapter 5 for details.
+    LibList = Self::LIB_LIST,
+    /// The section contains a list of symbols in an executable whose definitions
+    /// conflict with shared-object defined symbols.  See  "Quickstart" in Chapter 5 for
+    /// details.
+    Conflict = Self::CONFLICT,
+    /// The section contains the global pointer table. The global
+    /// pointer table includes a list of possible global data
+    /// area sizes.  The list allows the linker to provide the
+    /// user with information on the optimal size criteria to
+    /// use for gp register relative addressing. See  "Global
+    /// Data Area" below for details.
+    GpTable = Self::GP_TABLE,
+    /// This section type is reserved and the contents are un-
+    /// specified.  The section contents can be ignored.
+    UCode = Self::UCODE,
+    /// The section contains debug information specific to MIPS.  An ABI-compliant
+    /// application does not need to have a section of this type.
+    Debug = Self::DEBUG,
+    /// The section contains information regarding register usage information for the
+    /// object file.  See Register In- formation for details.
+    RegInfo = Self::REG_INFO,
+}
+
+impl ElfSectionheaderTypeMIPS {
+    /// The section contains information about the set of dy- namic shared object
+    /// libraries used when statically linking a program. Each entry contains
+    /// information such as the library name, timestamp, and version. See "Quickstart"
+    /// in Chapter 5 for details.
+    pub const LIB_LIST: u32 = 0x70000000;
+    /// The section contains a list of symbols in an executable whose definitions
+    /// conflict with shared-object defined symbols.  See  "Quickstart" in Chapter 5 for
+    /// details.
+    pub const CONFLICT: u32 = 0x70000002;
+    /// The section contains the global pointer table. The global
+    /// pointer table includes a list of possible global data
+    /// area sizes.  The list allows the linker to provide the
+    /// user with information on the optimal size criteria to
+    /// use for gp register relative addressing. See  "Global
+    /// Data Area" below for details.
+    pub const GP_TABLE: u32 = 0x70000003;
+    /// This section type is reserved and the contents are un-
+    /// specified.  The section contents can be ignored.
+    pub const UCODE: u32 = 0x70000004;
+    /// The section contains debug information specific to MIPS.  An ABI-compliant
+    /// application does not need to have a section of this type.
+    pub const DEBUG: u32 = 0x70000005;
+    /// The section contains information regarding register usage information for the
+    /// object file.  See Register In- formation for details.
+    pub const REG_INFO: u32 = 0x70000006;
 }

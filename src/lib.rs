@@ -179,7 +179,8 @@ impl Config {
 #[derive(Debug, Clone)]
 /// An ELF object file
 pub struct Elf<const EC: u8, const ED: u8> {
-    header: ElfHeader<EC, ED>,
+    /// The ELF object file header
+    pub header: ElfHeader<EC, ED>,
 }
 
 impl<R, const EC: u8, const ED: u8> FromReader<R> for Elf<EC, ED>

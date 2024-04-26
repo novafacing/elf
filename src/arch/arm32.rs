@@ -96,3 +96,33 @@ where
         Ok(())
     }
 }
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+/// Section Header Types
+pub enum ElfSectionheaderTypeARM32 {
+    /// Exception Index Table
+    ExIdx = Self::EXIDX,
+    /// BPABI DLL dynamic linking pre-emption map
+    PreemptMap = Self::PREEMPTMAP,
+    /// Object file compatibility attributes
+    Attributes = Self::ATTRIBUTES,
+    /// Debug Overlay
+    DebugOverlay = Self::DEBUGOVERLAY,
+    /// Overlay Section
+    Overlay = Self::OVERLAY,
+}
+
+impl ElfSectionheaderTypeARM32 {
+    /// Constant value for [ElfSectionheaderTypeARM32::ExIdx]
+    pub const EXIDX: u32 = 0x70000001;
+    /// Constant value for [ElfSectionheaderTypeARM32::PreemptMap]
+    pub const PREEMPTMAP: u32 = 0x70000002;
+    /// Constant value for [ElfSectionheaderTypeARM32::Attributes]
+    pub const ATTRIBUTES: u32 = 0x70000003;
+    /// Constant value for [ElfSectionheaderTypeARM32::DebugOverlay]
+    pub const DEBUGOVERLAY: u32 = 0x70000004;
+    /// Constant value for [ElfSectionheaderTypeARM32::Overlay]
+    pub const OVERLAY: u32 = 0x70000005;
+}
