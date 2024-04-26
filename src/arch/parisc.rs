@@ -148,3 +148,61 @@ where
         Ok(())
     }
 }
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+/// Section Header Types
+pub enum ElfSectionheaderTypePARISC {
+    /// Section contains product-specific extension bits
+    PariscExt = Self::PARISC_EXT,
+    /// Section contains nwind table entries
+    PariscUnwind = Self::PARISC_UNWIND,
+    /// Section contains debug information for optimized code
+    PariscDoc = Self::PARISC_DOC,
+    /// Section contains code annotations
+    PariscAnnot = Self::PARISC_ANNOT,
+    /// DKLM special section
+    PariscDlkm = Self::PARISC_DLKM,
+    /// Optional section holding argument location/relocation info
+    PariscSymextn = Self::PARISC_SYMEXTN,
+    /// Option section for linker stubs
+    PariscStubs = Self::PARISC_STUBS,
+    /// HP specific section
+    HpOvlbits = Self::HP_OVLBITS,
+    /// HP specific section
+    HpDlkm = Self::HP_DLKM,
+    /// HP specific section
+    HpComdat = Self::HP_COMDAT,
+    /// HP specific section
+    HpObjdict = Self::HP_OBJDICT,
+    /// HP specific section
+    HpAnnot = Self::HP_ANNOT,
+}
+
+impl ElfSectionheaderTypePARISC {
+    /// Section contains product-specific extension bits
+    pub const PARISC_EXT: u32 = 0x70000000;
+    /// Section contains nwind table entries
+    pub const PARISC_UNWIND: u32 = 0x70000001;
+    /// Section contains debug information for optimized code
+    pub const PARISC_DOC: u32 = 0x70000002;
+    /// Section contains code annotations
+    pub const PARISC_ANNOT: u32 = 0x70000003;
+    /// DKLM special section
+    pub const PARISC_DLKM: u32 = 0x70000004;
+    /// Optional section holding argument location/relocation info
+    pub const PARISC_SYMEXTN: u32 = 0x70000008;
+    /// Option section for linker stubs
+    pub const PARISC_STUBS: u32 = 0x70000009;
+    /// HP specific section
+    pub const HP_OVLBITS: u32 = 0x60000000;
+    /// HP specific section
+    pub const HP_DLKM: u32 = 0x60000001;
+    /// HP specific section
+    pub const HP_COMDAT: u32 = 0x60000002;
+    /// HP specific section
+    pub const HP_OBJDICT: u32 = 0x60000003;
+    /// HP specific section
+    pub const HP_ANNOT: u32 = 0x60000004;
+}

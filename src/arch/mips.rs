@@ -418,6 +418,75 @@ pub enum ElfSectionheaderTypeMIPS {
     /// The section contains information regarding register usage information for the
     /// object file.  See Register In- formation for details.
     RegInfo = Self::REG_INFO,
+    /// ???
+    Package = Self::PACKAGE,
+    /// ???
+    PackSym = Self::PACKSYM,
+    /// ???
+    RelD = Self::RELD,
+    /// Section contains interface information.  
+    IFace = Self::IFACE,
+    /// Section contains description of contents of another section.  
+    Content = Self::CONTENT,
+    /// Section contains miscellaneous options.  
+    Options = Self::OPTIONS,
+    /// ???
+    Shdr = Self::SHDR,
+    /// ???
+    FDesc = Self::FDESC,
+    /// ???
+    ExtSym = Self::EXTSYM,
+    /// ???
+    Dense = Self::DENSE,
+    /// ???
+    PDesc = Self::PDESC,
+    /// ???
+    LocSym = Self::LOCSYM,
+    /// ???
+    AuxSym = Self::AUXSYM,
+    /// ???
+    OptSym = Self::OPTSYM,
+    /// ???
+    LocStr = Self::LOCSTR,
+    /// ???
+    Line = Self::LINE,
+    /// ???
+    RfdDesc = Self::RFDESC,
+    /// Delta C++: symbol table
+    DeltaSYm = Self::DELTASYM,
+    /// Delta C++: instance table
+    DeltaInst = Self::DELTAINST,
+    /// Delta C++: class table
+    DeltaClass = Self::DELTACLASS,
+    /// DWARF debugging section.  
+    Dwarf = Self::DWARF,
+    /// Delta C++: declarations
+    DeltaDecl = Self::DELTADECL,
+    /// List of libraries the binary depends on.  Includes a time stamp, version
+    /// number.
+    SymbolLib = Self::SYMBOL_LIB,
+    /// Events section.  
+    Events = Self::EVENTS,
+    /// ???
+    Translate = Self::TRANSLATE,
+    /// Special pixie sections
+    Pixie = Self::PIXIE,
+    /// Address translation table (for debug info)
+    XLate = Self::XLATE,
+    /// SGI internal address translation table (for debug info)
+    XLateDebug = Self::XLATE_DEBUG,
+    /// Intermediate code
+    Whirl = Self::WHIRL,
+    /// C++ exception handling region info
+    EhRegion = Self::EH_REGION,
+    /// Obsolete address translation table (for debug info)
+    XLateOld = Self::XLATE_OLD,
+    /// Runtime procedure descriptor table exception information (ucode) ???
+    PdrException = Self::PDR_EXCEPTION,
+    /// ABI related flags section.  
+    AbiFlags = Self::ABIFLAGS,
+    /// GNU style symbol hash table with xlat.  
+    XHash = Self::XHASH,
 }
 
 impl ElfSectionheaderTypeMIPS {
@@ -446,4 +515,73 @@ impl ElfSectionheaderTypeMIPS {
     /// The section contains information regarding register usage information for the
     /// object file.  See Register In- formation for details.
     pub const REG_INFO: u32 = 0x70000006;
+    /// ???
+    pub const PACKAGE: u32 = 0x70000007;
+    /// ???
+    pub const PACKSYM: u32 = 0x70000008;
+    /// ???
+    pub const RELD: u32 = 0x70000009;
+    /// Section contains interface information.  
+    pub const IFACE: u32 = 0x7000000b;
+    /// Section contains description of contents of another section.  
+    pub const CONTENT: u32 = 0x7000000c;
+    /// Section contains miscellaneous options.  
+    pub const OPTIONS: u32 = 0x7000000d;
+    /// ???
+    pub const SHDR: u32 = 0x70000010;
+    /// ???
+    pub const FDESC: u32 = 0x70000011;
+    /// ???
+    pub const EXTSYM: u32 = 0x70000012;
+    /// ???
+    pub const DENSE: u32 = 0x70000013;
+    /// ???
+    pub const PDESC: u32 = 0x70000014;
+    /// ???
+    pub const LOCSYM: u32 = 0x70000015;
+    /// ???
+    pub const AUXSYM: u32 = 0x70000016;
+    /// ???
+    pub const OPTSYM: u32 = 0x70000017;
+    /// ???
+    pub const LOCSTR: u32 = 0x70000018;
+    /// ???
+    pub const LINE: u32 = 0x70000019;
+    /// ???
+    pub const RFDESC: u32 = 0x7000001a;
+    /// Delta C++: symbol table
+    pub const DELTASYM: u32 = 0x7000001b;
+    /// Delta C++: instance table
+    pub const DELTAINST: u32 = 0x7000001c;
+    /// Delta C++: class table
+    pub const DELTACLASS: u32 = 0x7000001d;
+    /// DWARF debugging section.  
+    pub const DWARF: u32 = 0x7000001e;
+    /// Delta C++: declarations
+    pub const DELTADECL: u32 = 0x7000001f;
+    /// List of libraries the binary depends on.  Includes a time stamp, version
+    /// number.
+    pub const SYMBOL_LIB: u32 = 0x70000020;
+    /// Events section.  
+    pub const EVENTS: u32 = 0x70000021;
+    /// ???
+    pub const TRANSLATE: u32 = 0x70000022;
+    /// Special pixie sections
+    pub const PIXIE: u32 = 0x70000023;
+    /// Address translation table (for debug info)
+    pub const XLATE: u32 = 0x70000024;
+    /// SGI internal address translation table (for debug info)
+    pub const XLATE_DEBUG: u32 = 0x70000025;
+    /// Intermediate code
+    pub const WHIRL: u32 = 0x70000026;
+    /// C++ exception handling region info
+    pub const EH_REGION: u32 = 0x70000027;
+    /// Obsolete address translation table (for debug info)
+    pub const XLATE_OLD: u32 = 0x70000028;
+    /// Runtime procedure descriptor table exception information (ucode) ???
+    pub const PDR_EXCEPTION: u32 = 0x70000029;
+    /// ABI related flags section.  
+    pub const ABIFLAGS: u32 = 0x7000002a;
+    /// GNU style symbol hash table with xlat.  
+    pub const XHASH: u32 = 0x7000002b;
 }

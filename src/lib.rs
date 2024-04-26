@@ -20,6 +20,7 @@ pub mod arch;
 pub mod base;
 pub mod error;
 pub mod header;
+pub mod os;
 
 #[macro_export]
 /// Add the ability to convert a primitive to an enum

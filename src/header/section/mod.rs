@@ -118,6 +118,8 @@ from_primitive! {
         /// SHN_XINDEX will the matching Elf32_Word hold the actual section header
         /// index; otherwise, the entry must be SHN_UNDEF (0).
         SymbolTableSectionHeaderIndex = 18,
+        /// RELR Relative Relocations
+        RelR = 19,
         // /// Values in this inclusive range are reserved for operating system- speciﬁc
         // /// semantics.
         // LowOperatingSystem = 0x60000000,

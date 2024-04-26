@@ -183,3 +183,17 @@ where
         Ok(())
     }
 }
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+/// Section Header Types
+pub enum ElfSectionheaderTypeRISCV {
+    /// This section contains RISC-V ELF attributes
+    Attributes = Self::ATTRIBUTES,
+}
+
+impl ElfSectionheaderTypeRISCV {
+    /// This section contains RISC-V ELF attributes
+    pub const ATTRIBUTES: u32 = 0x70000003;
+}
