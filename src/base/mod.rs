@@ -215,7 +215,6 @@ impl<const EC: u8, const ED: u8> From<ElfHalfWord<EC, ED>> for u16 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A word in an ELF file. Always represented as 32 bits for both classes.
-///
 pub struct ElfWord<const EC: u8, const ED: u8>(pub(crate) RawElf64Word);
 
 impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfWord<EC, ED>
