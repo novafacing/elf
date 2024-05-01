@@ -239,7 +239,7 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSecti
             });
         }
 
-        if value.0 == Self::ATTRIBUTES as u32 {
+        if value.0 == Self::ATTRIBUTES {
             Ok(Self::Attributes)
         } else {
             Err(Error::InvalidSectionHeaderType {

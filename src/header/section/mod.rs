@@ -146,25 +146,25 @@ enum ElfSectionHeaderType<const EC: u8, const ED: u8> {
     /// AARCH64-specific
     AARCH64(ElfSectionHeaderTypeAARCH64),
     /// ARM-specific
-    ARM(ElfSectionHeaderTypeARM32),
+    Arm(ElfSectionHeaderTypeARM32),
     /// I386-specific
     I386(ElfSectionHeaderTypeI386),
     /// MIPS-specific
-    MIPS(ElfSectionHeaderTypeMIPS),
+    Mips(ElfSectionHeaderTypeMIPS),
     /// PA-RISC-specific
-    PARISC(ElfSectionHeaderTypePARISC),
+    PaRisc(ElfSectionHeaderTypePARISC),
     /// PPC-specific
-    PPC(ElfSectionHeaderTypePPC),
+    Ppc(ElfSectionHeaderTypePPC),
     /// RISC-V-specific
-    RISCV(ElfSectionHeaderTypeRISCV),
+    Riscv(ElfSectionHeaderTypeRISCV),
     /// X86_64-Specific
     X86_64(ElfSectionHeaderTypeX86_64),
     /// Other processor-specific
     OtherProcessorSpecific(ElfWord<EC, ED>),
     /// GNU-Specific
-    GNU(ElfSectionHeaderTypeGNU),
+    Gnu(ElfSectionHeaderTypeGNU),
     /// SUN-Specific
-    SUN(ElfSectionHeaderTypeSUN),
+    Sun(ElfSectionHeaderTypeSUN),
     /// Other OS-specific
     OtherOperatingSystemSpecific(ElfWord<EC, ED>),
     /// All others
@@ -302,11 +302,11 @@ where
             other => {
                 if (Self::LOW_OPERATING_SYSTEM..Self::HIGH_OPERATING_SYSTEM).contains(&other) {
                     ElfSectionHeaderTypeGNU::try_from_with(r#type, config)
-                        .map(Self::GNU)
+                        .map(Self::Gnu)
                         .or_else(|_| {
-                            ElfSectionHeaderTypeSUN::try_from_with(r#type, config).map(Self::SUN)
+                            ElfSectionHeaderTypeSUN::try_from_with(r#type, config).map(Self::Sun)
                         })
-                        .or_else(|_| Ok(Self::OtherOperatingSystemSpecific(r#type)))
+                        .or(Ok(Self::OtherOperatingSystemSpecific(r#type)))
                 } else if (Self::LOW_PROCESSOR_SPECIFIC..Self::HIGH_PROCESSOR_SPECIFIC)
                     .contains(&other)
                 {
@@ -316,24 +316,24 @@ where
                                 .map(Self::AARCH64)
                         }
                         Some(ElfMachine::ARM) => {
-                            ElfSectionHeaderTypeARM32::try_from_with(r#type, config).map(Self::ARM)
+                            ElfSectionHeaderTypeARM32::try_from_with(r#type, config).map(Self::Arm)
                         }
                         Some(ElfMachine::I386) => {
                             ElfSectionHeaderTypeI386::try_from_with(r#type, config).map(Self::I386)
                         }
                         Some(ElfMachine::MIPS) => {
-                            ElfSectionHeaderTypeMIPS::try_from_with(r#type, config).map(Self::MIPS)
+                            ElfSectionHeaderTypeMIPS::try_from_with(r#type, config).map(Self::Mips)
                         }
                         Some(ElfMachine::PARISC) => {
                             ElfSectionHeaderTypePARISC::try_from_with(r#type, config)
-                                .map(Self::PARISC)
+                                .map(Self::PaRisc)
                         }
                         Some(ElfMachine::PPC) => {
-                            ElfSectionHeaderTypePPC::try_from_with(r#type, config).map(Self::PPC)
+                            ElfSectionHeaderTypePPC::try_from_with(r#type, config).map(Self::Ppc)
                         }
                         Some(ElfMachine::Riscv) => {
                             ElfSectionHeaderTypeRISCV::try_from_with(r#type, config)
-                                .map(Self::RISCV)
+                                .map(Self::Riscv)
                         }
                         Some(ElfMachine::X86_64) => {
                             ElfSectionHeaderTypeX86_64::try_from_with(r#type, config)
@@ -402,16 +402,16 @@ where
             ElfSectionHeaderType::AARCH64(value) => {
                 ElfWord::<EC, ED>::from(value).to_writer(writer)
             }
-            ElfSectionHeaderType::ARM(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
+            ElfSectionHeaderType::Arm(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
             ElfSectionHeaderType::I386(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
-            ElfSectionHeaderType::MIPS(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
-            ElfSectionHeaderType::PARISC(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
-            ElfSectionHeaderType::PPC(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
-            ElfSectionHeaderType::RISCV(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
+            ElfSectionHeaderType::Mips(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
+            ElfSectionHeaderType::PaRisc(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
+            ElfSectionHeaderType::Ppc(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
+            ElfSectionHeaderType::Riscv(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
             ElfSectionHeaderType::X86_64(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
             ElfSectionHeaderType::OtherProcessorSpecific(value) => value.to_writer(writer),
-            ElfSectionHeaderType::GNU(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
-            ElfSectionHeaderType::SUN(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
+            ElfSectionHeaderType::Gnu(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
+            ElfSectionHeaderType::Sun(value) => ElfWord::<EC, ED>::from(value).to_writer(writer),
             ElfSectionHeaderType::OtherOperatingSystemSpecific(value) => value.to_writer(writer),
             ElfSectionHeaderType::Other(value) => value.to_writer(writer),
         }

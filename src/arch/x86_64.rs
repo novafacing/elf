@@ -45,7 +45,7 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSecti
             });
         }
 
-        if value.0 == Self::UNWIND as u32 {
+        if value.0 == Self::UNWIND {
             Ok(Self::Unwind)
         } else {
             Err(Error::InvalidSectionHeaderType {

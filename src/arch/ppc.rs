@@ -47,7 +47,7 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSecti
             });
         }
 
-        if value.0 == Self::ORDERED as u32 {
+        if value.0 == Self::ORDERED {
             Ok(Self::Ordered)
         } else {
             Err(Error::InvalidSectionHeaderType {
