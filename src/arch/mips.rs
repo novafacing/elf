@@ -1,6 +1,8 @@
 //! Architecture specific definitions for mips
 
-use crate::{base::ElfWord, error::Error, Config, ToWriter, TryFromWithConfig};
+use crate::{
+    base::ElfWord, error::Error, header::elf::ElfMachine, Config, ToWriter, TryFromWithConfig,
+};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 use std::io::Write;
@@ -290,7 +292,7 @@ pub struct ElfHeaderFlagsMIPS<const EC: u8, const ED: u8> {
 impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfHeaderFlagsMIPS<EC, ED> {
     type Error = Error;
 
-    fn try_from_with(value: ElfWord<EC, ED>, _config: &mut Config) -> Result<Self, Self::Error> {
+    fn try_from_with(value: ElfWord<EC, ED>, config: &mut Config) -> Result<Self, Self::Error> {
         let mut flags = Vec::new();
 
         // Base flags
@@ -343,7 +345,10 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfHeade
                 ElfHeaderFlagMIPSArchitecture::from_u32(
                     value.0 & ElfHeaderFlagMIPSArchitecture::MASK,
                 )
-                .ok_or(Error::InvalidHeaderFlagMipsArchitecture { value: value.0 })?,
+                .ok_or(Error::InvalidHeaderFlagForMachine {
+                    machine: config.machine,
+                    value: value.0,
+                })?,
             ))
         }
 
@@ -352,14 +357,21 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfHeade
                 ElfHeaderFlagMIPSArchitectureExtension::from_u32(
                     value.0 & ElfHeaderFlagMIPSArchitectureExtension::MASK,
                 )
-                .ok_or(Error::InvalidHeaderFlagMipsArchitectureExtension { value: value.0 })?,
+                .ok_or(Error::InvalidHeaderFlagForMachine {
+                    machine: config.machine,
+                    value: value.0,
+                })?,
             ))
         }
 
         if value.0 & ElfHeaderFlagMIPSABI::MASK != 0 {
             flags.push(ElfHeaderFlagMIPS::Abi(
-                ElfHeaderFlagMIPSABI::from_u32(value.0 & ElfHeaderFlagMIPSABI::MASK)
-                    .ok_or(Error::InvalidHeaderFlagMipsAbi { value: value.0 })?,
+                ElfHeaderFlagMIPSABI::from_u32(value.0 & ElfHeaderFlagMIPSABI::MASK).ok_or(
+                    Error::InvalidHeaderFlagForMachine {
+                        machine: config.machine,
+                        value: value.0,
+                    },
+                )?,
             ))
         }
 
@@ -368,7 +380,10 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfHeade
                 ElfHeaderFlagMIPSMachine::from_u32(
                     value.0 & ElfHeaderFlagMIPSMachine::MACHINE_MASK,
                 )
-                .ok_or(Error::InvalidHeaderFlagMipsMachine { value: value.0 })?,
+                .ok_or(Error::InvalidHeaderFlagForMachine {
+                    machine: config.machine,
+                    value: value.0,
+                })?,
             ));
         }
 
@@ -584,4 +599,81 @@ impl ElfSectionHeaderTypeMIPS {
     pub const ABIFLAGS: u32 = 0x7000002a;
     /// GNU style symbol hash table with xlat.  
     pub const XHASH: u32 = 0x7000002b;
+}
+
+impl<const EC: u8, const ED: u8> From<ElfSectionHeaderTypeMIPS> for ElfWord<EC, ED> {
+    fn from(value: ElfSectionHeaderTypeMIPS) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> From<&ElfSectionHeaderTypeMIPS> for ElfWord<EC, ED> {
+    fn from(value: &ElfSectionHeaderTypeMIPS) -> Self {
+        Self(*value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSectionHeaderTypeMIPS {
+    type Error = Error;
+
+    fn try_from_with(value: ElfWord<EC, ED>, config: &mut Config) -> Result<Self, Self::Error> {
+        if !matches!(
+            config.machine,
+            Some(ElfMachine::MIPS) | Some(ElfMachine::MIPS_RS3_LE) | Some(ElfMachine::MIPS_X),
+        ) {
+            return Err(Error::InvalidMachineForSectionHeaderType {
+                machine: config.machine,
+                // NOTE: Is this OK or should we extend the error type to permit all three values?
+                expected_machines: vec![ElfMachine::MIPS],
+                value: value.0,
+            });
+        }
+
+        match value.0 {
+            Self::LIB_LIST => Ok(Self::LibList),
+            Self::CONFLICT => Ok(Self::Conflict),
+            Self::GP_TABLE => Ok(Self::GpTable),
+            Self::UCODE => Ok(Self::UCode),
+            Self::DEBUG => Ok(Self::Debug),
+            Self::REG_INFO => Ok(Self::RegInfo),
+            Self::PACKAGE => Ok(Self::Package),
+            Self::PACKSYM => Ok(Self::PackSym),
+            Self::RELD => Ok(Self::RelD),
+            Self::IFACE => Ok(Self::IFace),
+            Self::CONTENT => Ok(Self::Content),
+            Self::OPTIONS => Ok(Self::Options),
+            Self::SHDR => Ok(Self::Shdr),
+            Self::FDESC => Ok(Self::FDesc),
+            Self::EXTSYM => Ok(Self::ExtSym),
+            Self::DENSE => Ok(Self::Dense),
+            Self::PDESC => Ok(Self::PDesc),
+            Self::LOCSYM => Ok(Self::LocSym),
+            Self::AUXSYM => Ok(Self::AuxSym),
+            Self::OPTSYM => Ok(Self::OptSym),
+            Self::LOCSTR => Ok(Self::LocStr),
+            Self::LINE => Ok(Self::Line),
+            Self::RFDESC => Ok(Self::RfdDesc),
+            Self::DELTASYM => Ok(Self::DeltaSYm),
+            Self::DELTAINST => Ok(Self::DeltaInst),
+            Self::DELTACLASS => Ok(Self::DeltaClass),
+            Self::DWARF => Ok(Self::Dwarf),
+            Self::DELTADECL => Ok(Self::DeltaDecl),
+            Self::SYMBOL_LIB => Ok(Self::SymbolLib),
+            Self::EVENTS => Ok(Self::Events),
+            Self::TRANSLATE => Ok(Self::Translate),
+            Self::PIXIE => Ok(Self::Pixie),
+            Self::XLATE => Ok(Self::XLate),
+            Self::XLATE_DEBUG => Ok(Self::XLateDebug),
+            Self::WHIRL => Ok(Self::Whirl),
+            Self::EH_REGION => Ok(Self::EhRegion),
+            Self::XLATE_OLD => Ok(Self::XLateOld),
+            Self::PDR_EXCEPTION => Ok(Self::PdrException),
+            Self::ABIFLAGS => Ok(Self::AbiFlags),
+            Self::XHASH => Ok(Self::XHash),
+            _ => Err(Error::InvalidSectionHeaderType {
+                machine: config.machine,
+                value: value.0,
+            }),
+        }
+    }
 }

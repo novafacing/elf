@@ -5,7 +5,7 @@
 use error::Error;
 use header::elf::{
     identification::{
-        ElfClass, ElfDataEncoding, ElfHeaderIdentifier, ELF_CLASS_DEFAULT,
+        ElfClass, ElfDataEncoding, ElfHeaderIdentifier, ElfOSABI, ELF_CLASS_DEFAULT,
         ELF_DATA_ENCODING_DEFAULT,
     },
     ElfHeader, ElfMachine,
@@ -129,6 +129,9 @@ pub struct Config {
     #[builder(default, setter(into, strip_option))]
     /// The machine type of the ELF object currently being decoded
     machine: Option<ElfMachine<ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT>>,
+    #[builder(default, setter(into, strip_option))]
+    /// The OS ABI of the ELF object currently being decoded
+    os_abi: Option<ElfOSABI>,
 }
 
 impl Config {

@@ -230,7 +230,7 @@ impl HasWrittenSize for ElfIdentifierVersion {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromPrimitive, ToPrimitive)]
 #[non_exhaustive]
 /// The file's OS/ABI
 ///
@@ -285,13 +285,21 @@ pub enum ElfOSABI {
     /// in the aaelf32 documentation)
     ///
     /// NOTE: This value is specified by the the ARM ABI processor supplement.
+    ///
+    /// NOTE: This value is overloaded, it also means C6000 ELFABI (Bare-metal TMS320C60000),
+    /// and AMDGPU HSA Runtime
     ArmExtendedApplicationBinaryInterface = 64,
     /// FDPIC ELF for either XTensa or ARM, depending on the detected machine. For ARM, this
     /// is described in the fdpic document.
     ///
     /// NOTE: This value is specified by the the ARM ABI processor supplement and the
     /// XTensa ABI processor supplement, respectively, depending on the detected machine.
+    ///
+    /// NOTE: This value is overloaded, it also means C6000 Linux (TMS320C6000 Linux),
+    /// and AMDGPU PAL Runtime.
     ArmXTensaFunctionDescriptorPositionIndependentCode = 65,
+    /// AMDGPU MESA3D Runtime
+    AmdGpuMesa3DRuntime = 66,
     /// ARM (non-EABI)
     Arm = 97,
     /// Standalone system

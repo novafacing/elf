@@ -5,7 +5,7 @@ use std::io::Write;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
-use crate::{base::ElfWord, error::Error, ToWriter, TryFromWithConfig};
+use crate::{base::ElfWord, error::Error, header::elf::ElfMachine, ToWriter, TryFromWithConfig};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
@@ -134,28 +134,39 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>>
 
     fn try_from_with(
         value: ElfWord<EC, ED>,
-        _config: &mut crate::Config,
+        config: &mut crate::Config,
     ) -> Result<Self, Self::Error> {
         let mut flags = Vec::new();
 
         if value.0 & ElfHeaderFlagRISCVRVC::MASK != 0 {
             flags.push(ElfHeaderFlagRISCV::Rvc(
-                ElfHeaderFlagRISCVRVC::from_u32(value.0 & ElfHeaderFlagRISCVRVC::MASK)
-                    .ok_or(Error::InvalidHeaderFlagRiscvRvc { value: value.0 })?,
+                ElfHeaderFlagRISCVRVC::from_u32(value.0 & ElfHeaderFlagRISCVRVC::MASK).ok_or(
+                    Error::InvalidHeaderFlagForMachine {
+                        machine: config.machine,
+                        value: value.0,
+                    },
+                )?,
             ));
         }
 
         if value.0 & ElfHeaderFlagRISCVFloatAbi::MASK != 0 {
             flags.push(ElfHeaderFlagRISCV::FloatAbi(
                 ElfHeaderFlagRISCVFloatAbi::from_u32(value.0 & ElfHeaderFlagRISCVFloatAbi::MASK)
-                    .ok_or(Error::InvalidHeaderFlagRiscvFloatAbi { value: value.0 })?,
+                    .ok_or(Error::InvalidHeaderFlagForMachine {
+                        machine: config.machine,
+                        value: value.0,
+                    })?,
             ));
         }
 
         if value.0 & ElfHeaderFlagRISCVEAbi::MASK != 0 {
             flags.push(ElfHeaderFlagRISCV::EAbi(
-                ElfHeaderFlagRISCVEAbi::from_u32(value.0 & ElfHeaderFlagRISCVEAbi::MASK)
-                    .ok_or(Error::InvalidHeaderFlagRiscvEAbi { value: value.0 })?,
+                ElfHeaderFlagRISCVEAbi::from_u32(value.0 & ElfHeaderFlagRISCVEAbi::MASK).ok_or(
+                    Error::InvalidHeaderFlagForMachine {
+                        machine: config.machine,
+                        value: value.0,
+                    },
+                )?,
             ));
         }
 
@@ -164,7 +175,10 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>>
                 ElfHeaderFlagRISCVMemoryModel::from_u32(
                     value.0 & ElfHeaderFlagRISCVMemoryModel::MASK,
                 )
-                .ok_or(Error::InvalidHeaderFlagRiscvMemoryModel { value: value.0 })?,
+                .ok_or(Error::InvalidHeaderFlagForMachine {
+                    machine: config.machine,
+                    value: value.0,
+                })?,
             ));
         }
 
@@ -196,4 +210,42 @@ pub enum ElfSectionHeaderTypeRISCV {
 impl ElfSectionHeaderTypeRISCV {
     /// This section contains RISC-V ELF attributes
     pub const ATTRIBUTES: u32 = 0x70000003;
+}
+
+impl<const EC: u8, const ED: u8> From<ElfSectionHeaderTypeRISCV> for ElfWord<EC, ED> {
+    fn from(value: ElfSectionHeaderTypeRISCV) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> From<&ElfSectionHeaderTypeRISCV> for ElfWord<EC, ED> {
+    fn from(value: &ElfSectionHeaderTypeRISCV) -> Self {
+        Self(*value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSectionHeaderTypeRISCV {
+    type Error = Error;
+
+    fn try_from_with(
+        value: ElfWord<EC, ED>,
+        config: &mut crate::Config,
+    ) -> Result<Self, Self::Error> {
+        if !matches!(config.machine, Some(ElfMachine::Riscv)) {
+            return Err(Error::InvalidMachineForSectionHeaderType {
+                machine: config.machine,
+                expected_machines: vec![ElfMachine::Riscv],
+                value: value.0,
+            });
+        }
+
+        if value.0 == Self::ATTRIBUTES as u32 {
+            Ok(Self::Attributes)
+        } else {
+            Err(Error::InvalidSectionHeaderType {
+                machine: config.machine,
+                value: value.0,
+            })
+        }
+    }
 }

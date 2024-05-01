@@ -2,7 +2,9 @@
 
 use std::io::Write;
 
-use crate::{base::ElfWord, error::Error, Config, ToWriter, TryFromWithConfig};
+use crate::{
+    base::ElfWord, error::Error, header::elf::ElfMachine, Config, ToWriter, TryFromWithConfig,
+};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,13 +129,33 @@ impl ElfSectionHeaderTypeARM32 {
     pub const OVERLAY: u32 = 0x70000005;
 }
 
+impl<const EC: u8, const ED: u8> From<ElfSectionHeaderTypeARM32> for ElfWord<EC, ED> {
+    fn from(value: ElfSectionHeaderTypeARM32) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> From<&ElfSectionHeaderTypeARM32> for ElfWord<EC, ED> {
+    fn from(value: &ElfSectionHeaderTypeARM32) -> Self {
+        Self(*value as u32)
+    }
+}
+
 impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSectionHeaderTypeARM32 {
     type Error = Error;
 
     fn try_from_with(
         value: ElfWord<EC, ED>,
-        _config: &mut crate::Config,
+        config: &mut crate::Config,
     ) -> Result<Self, Self::Error> {
+        if !matches!(config.machine, Some(ElfMachine::ARM)) {
+            return Err(Error::InvalidMachineForSectionHeaderType {
+                machine: config.machine,
+                expected_machines: vec![ElfMachine::ARM],
+                value: value.0,
+            });
+        }
+
         if value.0 == Self::ExIdx as u32 {
             Ok(Self::ExIdx)
         } else if value.0 == Self::PreemptMap as u32 {
@@ -145,7 +167,10 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSecti
         } else if value.0 == Self::Overlay as u32 {
             Ok(Self::Overlay)
         } else {
-            Err(Error::InvalidSectionHeaderTypeARM32 { value: value.0 })
+            Err(Error::InvalidSectionHeaderType {
+                machine: config.machine,
+                value: value.0,
+            })
         }
     }
 }
