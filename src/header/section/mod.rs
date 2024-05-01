@@ -8,9 +8,17 @@ use std::{
 use typed_builder::TypedBuilder;
 
 use crate::{
+    arch::{
+        aarch64::ElfSectionHeaderTypeAARCH64, arm32::ElfSectionHeaderTypeARM32,
+        i386::ElfSectionHeaderTypeI386, mips::ElfSectionHeaderTypeMIPS,
+        parisc::ElfSectionHeaderTypePARISC, ppc::ElfSectionHeaderTypePPC,
+        riscv::ElfSectionHeaderTypeRISCV, x86_64::ElfSectionHeaderTypeX86_64,
+    },
     base::{ElfAddress, ElfExtendedWord, ElfOffset, ElfWord},
     error::{Error, ErrorContext},
-    from_primitive, Config, FromReader, HasWrittenSize, ToWriter,
+    from_primitive,
+    os::{gnu::ElfSectionHeaderTypeGNU, sun::ElfSectionHeaderTypeSUN},
+    Config, FromReader, HasWrittenSize, ToWriter,
 };
 
 use super::elf::identification::ElfClass;
@@ -25,118 +33,136 @@ pub struct ElfSectionHeaderName<const ED: u8> {
     pub value: ElfWord<{ ElfClass::Elf32 as u8 }, ED>,
 }
 
-from_primitive! {
-    #[repr(u32)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[non_exhaustive]
-    /// The type of an ELF section
-    enum ElfSectionHeaderType<const EC: u8, const ED: u8> {
-        /// Marks the section header as inactive; it does not have an associated
-        /// section. Other members of the section header have undefined values.
-        NullUndefined = 0,
-        /// Holds information deﬁned by the program, whose format and meaning are
-        /// determined solely by the program.
-        ProgramBits = 1,
-        /// Hold a symbol table. Currently, an object file may have only one section of
-        /// each type (`SymbolTable` and `DynamicSymbol`), but this restriction may be
-        /// relaxed in the future.  Typically, SHT_SYMTAB provides symbols for link
-        /// editing, though it may also be used for dynamic linking. As a complete
-        /// symbol table, it may contain many symbols unnecessary for dynamic linking.
-        /// Consequently, an object file may also contain a SHT_DYNSYM section, which
-        /// holds a minimal set of dynamic linking symbols, to save space.
-        ///
-        ///
-        SymbolTable = 2,
-        /// The section holds a string table. An object ﬁle may have multiple
-        /// string table sections. See ``String Table'' below for details.
-        StringTable = 3,
-        /// Holds relocation entries with explicit addends, such as type Elf32_Rela for
-        /// the 32-bit class of object ﬁles or type Elf64_Rela for the 64-bit class of
-        /// object ﬁles. An object ﬁle may have multiple relocation sections.
-        /// ``Relocation'' below for details.
-        RelocationExplicit = 4,
-        /// Holds a symbol hash table. Currently, an object ﬁle may have only one hash
-        /// table, but this restriction may be relaxed in the future. See ``Hash Table''
-        /// in the Chapter 5 for details.
-        Hash = 5,
-        /// The section holds information for dynamic linking. Currently, an object ﬁle
-        /// may have only one dynamic section, but this restriction may be relaxed in
-        /// the future. See ``Dynamic Section'' in Chapter 5 for details.
-        Dynamic = 6,
-        /// The section holds information that marks the ﬁle in some way. See ``Note
-        /// Section'' in Chapter 5 for details.
-        Note = 7,
-        /// A section of this type occupies no space in the ﬁle but otherwise resembles
-        /// SHT_PROGBITS. Although this section contains no bytes, the sh_oﬀset member
-        /// contains the conceptual ﬁle oﬀset.
-        NoBits = 8,
-        /// The section holds relocation entries without explicit addends, such as type
-        /// Elf32_Rel for the 32-bit class of object ﬁles or type Elf64_Rel for the
-        /// 64-bit class of object ﬁles. An object ﬁle may have multiple relocation
-        /// sections. See ``Relocation'' below for details.
-        RelocationImplicit = 9,
-        /// This section type is reserved but has unspecified semantics
-        SectionHeaderLibrary = 10,
-        /// Hold a symbol table. Currently, an object file may have only one section of
-        /// each type, but this restriction may be relaxed in the future.  Typically,
-        /// SHT_SYMTAB provides symbols for link editing, though it may also be used for
-        /// dynamic linking. As a complete symbol table, it may contain many symbols
-        /// unnecessary for dynamic linking.  Consequently, an object file may also
-        /// contain a SHT_DYNSYM section, which holds a minimal set of dynamic linking
-        /// symbols, to save space.  See ``Symbol Table'' below for details.
-        DynamicSymbol = 11,
-        /// This section contains an array of pointers to initialization functions, as
-        /// described in ``Initialization and Termination Functions'' in Chapter 5. Each
-        /// pointer in the array is taken as a parameterless procedure with a void
-        /// return.
-        InitializerArray = 14,
-        /// This section contains an array of pointers to termination functions, as
-        /// described in ``Initialization and Termination Functions'' in Chapter 5.
-        /// Each pointer in the array is taken as a parameterless procedure with a void
-        /// return
-        FinalizerArray = 15,
-        /// This section contains an array of pointers to functions that are invoked
-        /// before all other initialization functions, as described in ``Initialization
-        /// and Termination Functions'' in Chapter 5. Each pointer in the array is taken
-        /// as a parameterless procedure with a void return.
-        PreInitializerArray = 16,
-        /// This section deﬁnes a section group. A section group is a set of sections
-        /// that are related and that must be treated specially by the linker (see below
-        /// for further details). Sections of type SHT_GROUP may appear only in
-        /// relocatable objects (objects with the ELF header e_type member set to
-        /// ET_REL). The section header table entry for a group section must appear in
-        /// the section header table before the entries for any of the sections that are
-        /// members of the group.
-        Group = 17,
-        /// This section is associated with a symbol table section and is required if
-        /// any of the section header indexes referenced by that symbol table contain
-        /// the escape value SHN_XINDEX. The section is an array of Elf32_Word values.
-        /// Each value corresponds one to one with a symbol table entry and appear in
-        /// the same order as those entries. The values represent the section header
-        /// indexes against which the symbol table entries are deﬁned. Only if the
-        /// corresponding symbol table entry's st_shndx ﬁeld contains the escape value
-        /// SHN_XINDEX will the matching Elf32_Word hold the actual section header
-        /// index; otherwise, the entry must be SHN_UNDEF (0).
-        SymbolTableSectionHeaderIndex = 18,
-        /// RELR Relative Relocations
-        RelR = 19,
-        // /// Values in this inclusive range are reserved for operating system- speciﬁc
-        // /// semantics.
-        // LowOperatingSystem = 0x60000000,
-        // /// Values in this inclusive range are reserved for operating system-
-        // /// speciﬁc semantics.
-        // HighOperatingSystem = 0x6fffffff,
-        // /// Values in this inclusive range are reserved for processor specific
-        // /// speciﬁc semantics.
-        // LowProcessorSpecific = 0x70000000,
-        // /// Values in this inclusive range are reserved for processor specific
-        // /// speciﬁc semantics.
-        // HighProcessorSpecific = 0x7fffffff,
-        // /// Values in this inclusive range are resserved for application programs
-        // LowUserDefined = 0x80000000,
-        // // /// Values in this inclusive range are resserved for application programs
-        // // HighUserDefined = 0xffffffff
-    }
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+/// The type of an ELF section
+enum ElfSectionHeaderType<const EC: u8, const ED: u8> {
+    /// Marks the section header as inactive; it does not have an associated
+    /// section. Other members of the section header have undefined values.
+    NullUndefined = 0,
+    /// Holds information deﬁned by the program, whose format and meaning are
+    /// determined solely by the program.
+    ProgramBits = 1,
+    /// Hold a symbol table. Currently, an object file may have only one section of
+    /// each type (`SymbolTable` and `DynamicSymbol`), but this restriction may be
+    /// relaxed in the future.  Typically, SHT_SYMTAB provides symbols for link
+    /// editing, though it may also be used for dynamic linking. As a complete
+    /// symbol table, it may contain many symbols unnecessary for dynamic linking.
+    /// Consequently, an object file may also contain a SHT_DYNSYM section, which
+    /// holds a minimal set of dynamic linking symbols, to save space.
+    ///
+    ///
+    SymbolTable = 2,
+    /// The section holds a string table. An object ﬁle may have multiple
+    /// string table sections. See ``String Table'' below for details.
+    StringTable = 3,
+    /// Holds relocation entries with explicit addends, such as type Elf32_Rela for
+    /// the 32-bit class of object ﬁles or type Elf64_Rela for the 64-bit class of
+    /// object ﬁles. An object ﬁle may have multiple relocation sections.
+    /// ``Relocation'' below for details.
+    RelocationExplicit = 4,
+    /// Holds a symbol hash table. Currently, an object ﬁle may have only one hash
+    /// table, but this restriction may be relaxed in the future. See ``Hash Table''
+    /// in the Chapter 5 for details.
+    Hash = 5,
+    /// The section holds information for dynamic linking. Currently, an object ﬁle
+    /// may have only one dynamic section, but this restriction may be relaxed in
+    /// the future. See ``Dynamic Section'' in Chapter 5 for details.
+    Dynamic = 6,
+    /// The section holds information that marks the ﬁle in some way. See ``Note
+    /// Section'' in Chapter 5 for details.
+    Note = 7,
+    /// A section of this type occupies no space in the ﬁle but otherwise resembles
+    /// SHT_PROGBITS. Although this section contains no bytes, the sh_oﬀset member
+    /// contains the conceptual ﬁle oﬀset.
+    NoBits = 8,
+    /// The section holds relocation entries without explicit addends, such as type
+    /// Elf32_Rel for the 32-bit class of object ﬁles or type Elf64_Rel for the
+    /// 64-bit class of object ﬁles. An object ﬁle may have multiple relocation
+    /// sections. See ``Relocation'' below for details.
+    RelocationImplicit = 9,
+    /// This section type is reserved but has unspecified semantics
+    SectionHeaderLibrary = 10,
+    /// Hold a symbol table. Currently, an object file may have only one section of
+    /// each type, but this restriction may be relaxed in the future.  Typically,
+    /// SHT_SYMTAB provides symbols for link editing, though it may also be used for
+    /// dynamic linking. As a complete symbol table, it may contain many symbols
+    /// unnecessary for dynamic linking.  Consequently, an object file may also
+    /// contain a SHT_DYNSYM section, which holds a minimal set of dynamic linking
+    /// symbols, to save space.  See ``Symbol Table'' below for details.
+    DynamicSymbol = 11,
+    /// This section contains an array of pointers to initialization functions, as
+    /// described in ``Initialization and Termination Functions'' in Chapter 5. Each
+    /// pointer in the array is taken as a parameterless procedure with a void
+    /// return.
+    InitializerArray = 14,
+    /// This section contains an array of pointers to termination functions, as
+    /// described in ``Initialization and Termination Functions'' in Chapter 5.
+    /// Each pointer in the array is taken as a parameterless procedure with a void
+    /// return
+    FinalizerArray = 15,
+    /// This section contains an array of pointers to functions that are invoked
+    /// before all other initialization functions, as described in ``Initialization
+    /// and Termination Functions'' in Chapter 5. Each pointer in the array is taken
+    /// as a parameterless procedure with a void return.
+    PreInitializerArray = 16,
+    /// This section deﬁnes a section group. A section group is a set of sections
+    /// that are related and that must be treated specially by the linker (see below
+    /// for further details). Sections of type SHT_GROUP may appear only in
+    /// relocatable objects (objects with the ELF header e_type member set to
+    /// ET_REL). The section header table entry for a group section must appear in
+    /// the section header table before the entries for any of the sections that are
+    /// members of the group.
+    Group = 17,
+    /// This section is associated with a symbol table section and is required if
+    /// any of the section header indexes referenced by that symbol table contain
+    /// the escape value SHN_XINDEX. The section is an array of Elf32_Word values.
+    /// Each value corresponds one to one with a symbol table entry and appear in
+    /// the same order as those entries. The values represent the section header
+    /// indexes against which the symbol table entries are deﬁned. Only if the
+    /// corresponding symbol table entry's st_shndx ﬁeld contains the escape value
+    /// SHN_XINDEX will the matching Elf32_Word hold the actual section header
+    /// index; otherwise, the entry must be SHN_UNDEF (0).
+    SymbolTableSectionHeaderIndex = 18,
+    /// RELR Relative Relocations
+    RelR = 19,
+    // /// Values in this inclusive range are reserved for operating system- speciﬁc
+    // /// semantics.
+    // LowOperatingSystem = 0x60000000,
+    // /// Values in this inclusive range are reserved for operating system-
+    // /// speciﬁc semantics.
+    // HighOperatingSystem = 0x6fffffff,
+    // /// Values in this inclusive range are reserved for processor specific
+    // /// speciﬁc semantics.
+    // LowProcessorSpecific = 0x70000000,
+    // /// Values in this inclusive range are reserved for processor specific
+    // /// speciﬁc semantics.
+    // HighProcessorSpecific = 0x7fffffff,
+    // /// Values in this inclusive range are resserved for application programs
+    // LowUserDefined = 0x80000000,
+    // // /// Values in this inclusive range are resserved for application programs
+    // // HighUserDefined = 0xffffffff
+    /// AARCH64-specific
+    AARCH64(ElfSectionHeaderTypeAARCH64),
+    /// ARM-specific
+    ARM(ElfSectionHeaderTypeARM32),
+    /// I386-specific
+    I386(ElfSectionHeaderTypeI386),
+    /// MIPS-specific
+    MIPS(ElfSectionHeaderTypeMIPS),
+    /// PA-RISC-specific
+    PARISC(ElfSectionHeaderTypePARISC),
+    /// PPC-specific
+    PPC(ElfSectionHeaderTypePPC),
+    /// RISC-V-specific
+    RISCV(ElfSectionHeaderTypeRISCV),
+    /// X86_64-Specific
+    X86_64(ElfSectionHeaderTypeX86_64),
+    /// GNU-Specific
+    GNU(ElfSectionHeaderTypeGNU),
+    /// SUN-Specific
+    SUN(ElfSectionHeaderTypeSUN),
 }
 
 impl<R, const EC: u8, const ED: u8> FromReader<R> for ElfSectionHeaderType<EC, ED>
@@ -148,7 +174,7 @@ where
     fn from_reader_with(reader: &mut R, config: &mut Config) -> Result<Self, Self::Error> {
         let r#type = ElfWord::<EC, ED>::from_reader_with(reader, config)?;
 
-        if let Some(r#type) = Self::from_u32(r#type.0) {
+        if let Some(r#type) = match r#type.0 {} {
             Ok(r#type)
         } else {
             Err(Error::InvalidElfSectionHeaderType {

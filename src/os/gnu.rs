@@ -4,7 +4,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 /// Section Header Types
-pub enum ElfSectionheaderTypeGNU {
+pub enum ElfSectionHeaderTypeGNU {
     /// Incremental build data
     IncrementalInputs = Self::INCREMENTAL_INPUTS,
     /// Object attributes
@@ -21,7 +21,7 @@ pub enum ElfSectionheaderTypeGNU {
     VerSym = Self::VERSYM,
 }
 
-impl ElfSectionheaderTypeGNU {
+impl ElfSectionHeaderTypeGNU {
     /// Incremental build data
     pub const INCREMENTAL_INPUTS: u32 = 0x6fff4700;
     /// Object attributes

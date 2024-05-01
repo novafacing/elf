@@ -101,7 +101,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 /// Section Header Types
-pub enum ElfSectionheaderTypeARM32 {
+pub enum ElfSectionHeaderTypeARM32 {
     /// Exception Index Table
     ExIdx = Self::EXIDX,
     /// BPABI DLL dynamic linking pre-emption map
@@ -114,7 +114,7 @@ pub enum ElfSectionheaderTypeARM32 {
     Overlay = Self::OVERLAY,
 }
 
-impl ElfSectionheaderTypeARM32 {
+impl ElfSectionHeaderTypeARM32 {
     /// Constant value for [ElfSectionheaderTypeARM32::ExIdx]
     pub const EXIDX: u32 = 0x70000001;
     /// Constant value for [ElfSectionheaderTypeARM32::PreemptMap]
@@ -125,4 +125,27 @@ impl ElfSectionheaderTypeARM32 {
     pub const DEBUGOVERLAY: u32 = 0x70000004;
     /// Constant value for [ElfSectionheaderTypeARM32::Overlay]
     pub const OVERLAY: u32 = 0x70000005;
+}
+
+impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSectionHeaderTypeARM32 {
+    type Error = Error;
+
+    fn try_from_with(
+        value: ElfWord<EC, ED>,
+        _config: &mut crate::Config,
+    ) -> Result<Self, Self::Error> {
+        if value.0 == Self::ExIdx as u32 {
+            Ok(Self::ExIdx)
+        } else if value.0 == Self::PreemptMap as u32 {
+            Ok(Self::PreemptMap)
+        } else if value.0 == Self::Attributes as u32 {
+            Ok(Self::Attributes)
+        } else if value.0 == Self::DebugOverlay as u32 {
+            Ok(Self::DebugOverlay)
+        } else if value.0 == Self::Overlay as u32 {
+            Ok(Self::Overlay)
+        } else {
+            Err(Error::InvalidSectionHeaderTypeARM32 { value: value.0 })
+        }
+    }
 }

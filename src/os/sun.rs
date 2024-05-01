@@ -4,7 +4,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 /// Section Header Types
-pub enum ElfSectionheaderTypeSUN {
+pub enum ElfSectionHeaderTypeSUN {
     /// Versions defined by file
     VerDef = Self::VERDEF,
     /// Versions needed by file
@@ -13,7 +13,7 @@ pub enum ElfSectionheaderTypeSUN {
     VerSym = Self::VERSYM,
 }
 
-impl ElfSectionheaderTypeSUN {
+impl ElfSectionHeaderTypeSUN {
     /// Versions defined by file
     pub const VERDEF: u32 = 0x6ffffffd;
     /// Versions needed by file

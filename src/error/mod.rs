@@ -221,6 +221,33 @@ pub enum Error {
         /// The invalid value
         value: u32,
     },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the AARCH64 architecture
+    InvalidSectionHeaderTypeAARCH64 { value: u32 },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the ARM32 architecture
+    InvalidSectionHeaderTypeARM32 { value: u32 },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the I386 architecture
+    InvalidSectionHeaderTypeI386 { value: u32 },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the M68K architecture
+    InvalidSectionHeaderTypeM68K { value: u32 },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the MIPS architecture
+    InvalidSectionHeaderTypeMIPS { value: u32 },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the PARISC architecture
+    InvalidSectionHeaderTypePARISC { value: u32 },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the PPC architecture
+    InvalidSectionHeaderTypePPC { value: u32 },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the RISCV architecture
+    InvalidSectionHeaderTypeRISCV { value: u32 },
+    #[error("Invalid ELF Section Header Type {value}")]
+    /// The SHT_ value was invalid for the X86_64 architecture
+    InvalidSectionHeaderTypeX86_64 { value: u32 },
 }
 
 #[derive(Debug, Clone, Eq, PartialOrd, Ord, TypedBuilder)]

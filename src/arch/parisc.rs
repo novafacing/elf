@@ -153,7 +153,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 /// Section Header Types
-pub enum ElfSectionheaderTypePARISC {
+pub enum ElfSectionHeaderTypePARISC {
     /// Section contains product-specific extension bits
     PariscExt = Self::PARISC_EXT,
     /// Section contains nwind table entries
@@ -180,7 +180,7 @@ pub enum ElfSectionheaderTypePARISC {
     HpAnnot = Self::HP_ANNOT,
 }
 
-impl ElfSectionheaderTypePARISC {
+impl ElfSectionHeaderTypePARISC {
     /// Section contains product-specific extension bits
     pub const PARISC_EXT: u32 = 0x70000000;
     /// Section contains nwind table entries

@@ -6,12 +6,12 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 /// Section Header Types
-pub enum ElfSectionheaderTypeI386 {
+pub enum ElfSectionHeaderTypeI386 {
     /// Unwind Table
     Unwind = Self::UNWIND,
 }
 
-impl ElfSectionheaderTypeI386 {
+impl ElfSectionHeaderTypeI386 {
     /// Constant value for [ElfSectionheaderTypeI386::Unwind]
     pub const UNWIND: u32 = 0x70000001;
 }

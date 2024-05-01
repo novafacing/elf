@@ -392,7 +392,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 /// Section Header Types
-pub enum ElfSectionheaderTypeMIPS {
+pub enum ElfSectionHeaderTypeMIPS {
     /// The section contains information about the set of dy- namic shared object
     /// libraries used when statically linking a program. Each entry contains
     /// information such as the library name, timestamp, and version. See "Quickstart"
@@ -489,7 +489,7 @@ pub enum ElfSectionheaderTypeMIPS {
     XHash = Self::XHASH,
 }
 
-impl ElfSectionheaderTypeMIPS {
+impl ElfSectionHeaderTypeMIPS {
     /// The section contains information about the set of dy- namic shared object
     /// libraries used when statically linking a program. Each entry contains
     /// information such as the library name, timestamp, and version. See "Quickstart"
