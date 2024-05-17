@@ -18,10 +18,10 @@ use crate::{
     error::{Error, ErrorContext},
     from_primitive,
     os::{gnu::ElfSectionHeaderTypeGNU, sun::ElfSectionHeaderTypeSUN},
-    Config, FromReader, HasWrittenSize, ToWriter,
+    Config, FromReader, HasWrittenSize, ToWriter, TryFromWithConfig,
 };
 
-use super::elf::identification::ElfClass;
+use super::elf::{identification::ElfClass, ElfMachine};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The name of an ELF section
@@ -174,7 +174,30 @@ where
     fn from_reader_with(reader: &mut R, config: &mut Config) -> Result<Self, Self::Error> {
         let r#type = ElfWord::<EC, ED>::from_reader_with(reader, config)?;
 
-        if let Some(r#type) = match r#type.0 {} {
+        if let Some(r#type) = match r#type.0 {
+            0 => Some(Self::NullUndefined),
+            1 => Some(Self::ProgramBits),
+            2 => Some(Self::SymbolTable),
+            3 => Some(Self::StringTable),
+            4 => Some(Self::RelocationExplicit),
+            5 => Some(Self::Hash),
+            6 => Some(Self::Dynamic),
+            7 => Some(Self::Note),
+            8 => Some(Self::NoBits),
+            9 => Some(Self::RelocationExplicit),
+            10 => Some(Self::SectionHeaderLibrary),
+            11 => Some(Self::DynamicSymbol),
+            14 => Some(Self::InitializerArray),
+            15 => Some(Self::FinalizerArray),
+            16 => Some(Self::PreInitializerArray),
+            17 => Some(Self::Group),
+            18 => Some(Self::SymbolTableSectionHeaderIndex),
+            19 => Some(Self::RelR),
+            _ => match config.machine {
+                Some(_) => None,
+                None => None,
+            },
+        } {
             Ok(r#type)
         } else {
             Err(Error::InvalidElfSectionHeaderType {
