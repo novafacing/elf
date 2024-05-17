@@ -4,7 +4,7 @@
 
 use num_derive::FromPrimitive;
 
-use crate::{base::ElfWord, error::Error, TryFromWithConfig};
+use crate::{base::ElfWord, error::Error, header::elf::ElfMachine, TryFromWithConfig};
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
@@ -21,6 +21,18 @@ impl ElfSectionHeaderTypeAARCH64 {
     pub const ATTRIBUTES: u32 = 0x70000003;
 }
 
+impl<const EC: u8, const ED: u8> From<ElfSectionHeaderTypeAARCH64> for ElfWord<EC, ED> {
+    fn from(value: ElfSectionHeaderTypeAARCH64) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> From<&ElfSectionHeaderTypeAARCH64> for ElfWord<EC, ED> {
+    fn from(value: &ElfSectionHeaderTypeAARCH64) -> Self {
+        Self(*value as u32)
+    }
+}
+
 impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>>
     for ElfSectionHeaderTypeAARCH64
 {
@@ -28,12 +40,23 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>>
 
     fn try_from_with(
         value: ElfWord<EC, ED>,
-        _config: &mut crate::Config,
+        config: &mut crate::Config,
     ) -> Result<Self, Self::Error> {
+        if !matches!(config.machine, Some(ElfMachine::AARCH64)) {
+            return Err(Error::InvalidMachineForSectionHeaderType {
+                machine: config.machine,
+                expected_machines: vec![ElfMachine::AARCH64],
+                value: value.0,
+            });
+        }
+
         if value.0 == Self::Attributes as u32 {
             Ok(Self::Attributes)
         } else {
-            Err(Error::InvalidSectionHeaderTypeAARCH64 { value: value.0 })
+            Err(Error::InvalidSectionHeaderType {
+                machine: config.machine,
+                value: value.0,
+            })
         }
     }
 }

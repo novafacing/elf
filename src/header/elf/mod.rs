@@ -104,7 +104,7 @@ impl<const EC: u8, const ED: u8> HasWrittenSize for ElfType<EC, ED> {
 
 from_primitive! {
     #[allow(non_camel_case_types)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[non_exhaustive]
     /// The ELF object's machine
     enum ElfMachine<const EC: u8, const ED: u8> {
@@ -660,6 +660,8 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfHeade
     type Error = Error;
 
     fn try_from_with(value: ElfWord<EC, ED>, config: &mut Config) -> Result<Self, Self::Error> {
+        // NOTE: There's checking in each of the arch-specific header flags but we pre-check
+        // because there isn't actually a type for all of them (some define no flags)
         match config.machine {
             Some(ElfMachine::AARCH64) => Ok(Self::AARCH64(value)),
             Some(ElfMachine::ARM) => Ok(Self::ARM32(ElfHeaderFlagsARM32::try_from_with(

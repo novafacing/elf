@@ -9,7 +9,12 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     base::ElfByte,
-    header::elf::identification::{ElfClass, ElfDataEncoding},
+    header::elf::{
+        identification::{
+            ElfClass, ElfDataEncoding, ElfOSABI, ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT,
+        },
+        ElfMachine,
+    },
 };
 
 #[derive(thiserror::Error, Debug, PartialEq, Eq, Hash)]
@@ -167,87 +172,46 @@ pub enum Error {
         /// The decoding context
         context: ErrorContext,
     },
-    #[error("Invalid ELF Flag value for MIPS machine {value}")]
-    /// The EF_MIPS_MACH field of the header flags field was invalid
-    InvalidHeaderFlagMipsMachine {
-        /// The invalid value
+    #[error("Invalid ELF Header Flag value {value} for {machine:?}")]
+    /// The value was invalid for the machine
+    InvalidHeaderFlagForMachine {
+        /// The machine the flag is invalid for
+        machine: Option<ElfMachine<ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT>>,
+        /// The value that was invalid
         value: u32,
     },
-    #[error("Invalid ELF flag value for MIPS architecture {value}")]
-    /// The EF_MIPS_ARCH field of the header flags field was invalid
-    InvalidHeaderFlagMipsArchitecture {
-        /// The invalid value
+    #[error(
+        "Invalid ELF Machine {machine:?} for expected machine(s) {expected_machines:?} ELF Section Header Type {value}"
+    )]
+    /// The machine was invalid for a processor-specific section header type
+    InvalidMachineForSectionHeaderType {
+        /// The machine that was invalid
+        machine: Option<ElfMachine<ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT>>,
+        /// The expected machine
+        expected_machines: Vec<ElfMachine<ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT>>,
+        /// The value that was invalid
         value: u32,
     },
-    #[error("Invalid ELF flag value for MIPS architecture {value}")]
-    /// The EF_MIPS_ARCH field of the header flags field was invalid
-    InvalidHeaderFlagMipsArchitectureExtension {
-        /// The invalid value
+    #[error(
+        "Invalid ELF OS/ABI {os_abi:?} for expected OS/ABI(s) {expected_os_abis:?} ELF Section Header Type {value}"
+    )]
+    /// The OS/ABI was invalid for an OS-specific section header type
+    InvalidOsAbiForSectionHeaderType {
+        /// The OS/ABI that was invalid
+        os_abi: Option<ElfOSABI>,
+        /// The expected OS/ABI
+        expected_os_abis: Vec<ElfOSABI>,
+        /// The value that was invalid
         value: u32,
     },
-    #[error("Invalid ELF flag value for MIPS architecture {value}")]
-    /// The EF_MIPS_ARCH field of the header flags field was invalid
-    InvalidHeaderFlagMipsAbi {
-        /// The invalid value
-        value: u32,
-    },
-    #[error("Invalid ELF flag value for PARISC architecture {value}")]
-    /// The EF_PARISC_ARCH field of the header flags field was invalid
-    InvalidHeaderFlagPariscArchitectureExtensions {
-        /// The invalid value
-        value: u32,
-    },
-    #[error("Invalid ELF flag value for RISCV architecture {value}")]
-    /// The EF_RISCV_RVC field of the header flags field was invalid
-    InvalidHeaderFlagRiscvRvc {
-        /// The invalid value
-        value: u32,
-    },
-    #[error("Invalid ELF flag value for RISCV architecture {value}")]
-    /// The EF_RISCV_FLOAT_ABI field of the header flags field was invalid
-    InvalidHeaderFlagRiscvFloatAbi {
-        /// The invalid value
-        value: u32,
-    },
-    #[error("Invalid ELF flag value for RISCV architecture {value}")]
-    /// The EF_RISCV_RVE field of the header flags field was invalid
-    InvalidHeaderFlagRiscvEAbi {
-        /// The invalid value
-        value: u32,
-    },
-    #[error("Invalid ELF flag value for RISCV architecture {value}")]
-    /// The EF_RISCV_TSO field of the header flags field was invalid
-    InvalidHeaderFlagRiscvMemoryModel {
-        /// The invalid value
-        value: u32,
-    },
-    #[error("Invalid ELF Section Header Type {value}")]
+    #[error("Invalid ELF Section Header Type {value} for {machine:?}")]
     /// The SHT_ value was invalid for the AARCH64 architecture
-    InvalidSectionHeaderTypeAARCH64 { value: u32 },
-    #[error("Invalid ELF Section Header Type {value}")]
-    /// The SHT_ value was invalid for the ARM32 architecture
-    InvalidSectionHeaderTypeARM32 { value: u32 },
-    #[error("Invalid ELF Section Header Type {value}")]
-    /// The SHT_ value was invalid for the I386 architecture
-    InvalidSectionHeaderTypeI386 { value: u32 },
-    #[error("Invalid ELF Section Header Type {value}")]
-    /// The SHT_ value was invalid for the M68K architecture
-    InvalidSectionHeaderTypeM68K { value: u32 },
-    #[error("Invalid ELF Section Header Type {value}")]
-    /// The SHT_ value was invalid for the MIPS architecture
-    InvalidSectionHeaderTypeMIPS { value: u32 },
-    #[error("Invalid ELF Section Header Type {value}")]
-    /// The SHT_ value was invalid for the PARISC architecture
-    InvalidSectionHeaderTypePARISC { value: u32 },
-    #[error("Invalid ELF Section Header Type {value}")]
-    /// The SHT_ value was invalid for the PPC architecture
-    InvalidSectionHeaderTypePPC { value: u32 },
-    #[error("Invalid ELF Section Header Type {value}")]
-    /// The SHT_ value was invalid for the RISCV architecture
-    InvalidSectionHeaderTypeRISCV { value: u32 },
-    #[error("Invalid ELF Section Header Type {value}")]
-    /// The SHT_ value was invalid for the X86_64 architecture
-    InvalidSectionHeaderTypeX86_64 { value: u32 },
+    InvalidSectionHeaderType {
+        /// The machine the section header type is invalid for
+        machine: Option<ElfMachine<ELF_CLASS_DEFAULT, ELF_DATA_ENCODING_DEFAULT>>,
+        /// The value that was invalid
+        value: u32,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialOrd, Ord, TypedBuilder)]

@@ -5,7 +5,9 @@ use std::io::Write;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
 
-use crate::{base::ElfWord, error::Error, Config, ToWriter, TryFromWithConfig};
+use crate::{
+    base::ElfWord, error::Error, header::elf::ElfMachine, Config, ToWriter, TryFromWithConfig,
+};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
@@ -97,7 +99,7 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>>
 {
     type Error = Error;
 
-    fn try_from_with(value: ElfWord<EC, ED>, _config: &mut Config) -> Result<Self, Self::Error> {
+    fn try_from_with(value: ElfWord<EC, ED>, config: &mut Config) -> Result<Self, Self::Error> {
         let mut flags = Vec::new();
 
         if value.0 & ElfHeaderFlagPARISC::TRAP_NIL != 0 {
@@ -129,7 +131,10 @@ impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>>
                 ElfHeaderFlagPARISCArchitectureVersion::from_u32(
                     value.0 & ElfHeaderFlagPARISCArchitectureVersion::MASK,
                 )
-                .ok_or(Error::InvalidHeaderFlagPariscArchitectureExtensions { value: value.0 })?,
+                .ok_or(Error::InvalidHeaderFlagForMachine {
+                    machine: config.machine,
+                    value: value.0,
+                })?,
             ))
         }
 
@@ -205,4 +210,49 @@ impl ElfSectionHeaderTypePARISC {
     pub const HP_OBJDICT: u32 = 0x60000003;
     /// HP specific section
     pub const HP_ANNOT: u32 = 0x60000004;
+}
+
+impl<const EC: u8, const ED: u8> From<ElfSectionHeaderTypePARISC> for ElfWord<EC, ED> {
+    fn from(value: ElfSectionHeaderTypePARISC) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> From<&ElfSectionHeaderTypePARISC> for ElfWord<EC, ED> {
+    fn from(value: &ElfSectionHeaderTypePARISC) -> Self {
+        Self(*value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSectionHeaderTypePARISC {
+    type Error = Error;
+
+    fn try_from_with(value: ElfWord<EC, ED>, config: &mut Config) -> Result<Self, Self::Error> {
+        if !matches!(config.machine, Some(ElfMachine::PARISC)) {
+            return Err(Error::InvalidMachineForSectionHeaderType {
+                machine: config.machine,
+                expected_machines: vec![ElfMachine::PARISC],
+                value: value.0,
+            });
+        }
+
+        match value.0 {
+            Self::PARISC_EXT => Ok(Self::PariscExt),
+            Self::PARISC_UNWIND => Ok(Self::PariscUnwind),
+            Self::PARISC_DOC => Ok(Self::PariscDoc),
+            Self::PARISC_ANNOT => Ok(Self::PariscAnnot),
+            Self::PARISC_DLKM => Ok(Self::PariscDlkm),
+            Self::PARISC_SYMEXTN => Ok(Self::PariscSymextn),
+            Self::PARISC_STUBS => Ok(Self::PariscStubs),
+            Self::HP_OVLBITS => Ok(Self::HpOvlbits),
+            Self::HP_DLKM => Ok(Self::HpDlkm),
+            Self::HP_COMDAT => Ok(Self::HpComdat),
+            Self::HP_OBJDICT => Ok(Self::HpObjdict),
+            Self::HP_ANNOT => Ok(Self::HpAnnot),
+            _ => Err(Error::InvalidSectionHeaderType {
+                machine: config.machine,
+                value: value.0,
+            }),
+        }
+    }
 }

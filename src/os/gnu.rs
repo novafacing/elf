@@ -1,5 +1,9 @@
 //! GNU-specific definitions
 
+use crate::{
+    base::ElfWord, error::Error, header::elf::identification::ElfOSABI, TryFromWithConfig,
+};
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -36,4 +40,46 @@ impl ElfSectionHeaderTypeGNU {
     pub const VERNEED: u32 = 0x6ffffffe;
     /// Symbol versions
     pub const VERSYM: u32 = 0x6fffffff;
+}
+
+impl<const EC: u8, const ED: u8> From<ElfSectionHeaderTypeGNU> for ElfWord<EC, ED> {
+    fn from(value: ElfSectionHeaderTypeGNU) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> From<&ElfSectionHeaderTypeGNU> for ElfWord<EC, ED> {
+    fn from(value: &ElfSectionHeaderTypeGNU) -> Self {
+        Self(*value as u32)
+    }
+}
+
+impl<const EC: u8, const ED: u8> TryFromWithConfig<ElfWord<EC, ED>> for ElfSectionHeaderTypeGNU {
+    type Error = Error;
+
+    fn try_from_with(
+        value: ElfWord<EC, ED>,
+        config: &mut crate::Config,
+    ) -> Result<Self, Self::Error> {
+        if !matches!(config.os_abi, Some(ElfOSABI::GnuLinux)) {
+            return Err(Error::InvalidOsAbiForSectionHeaderType {
+                os_abi: config.os_abi,
+                expected_os_abis: vec![ElfOSABI::GnuLinux],
+                value: value.0,
+            });
+        }
+        match value.0 {
+            Self::INCREMENTAL_INPUTS => Ok(Self::IncrementalInputs),
+            Self::ATTRIBUTES => Ok(Self::Attributes),
+            Self::HASH => Ok(Self::Hash),
+            Self::LIBLIST => Ok(Self::LibList),
+            Self::VERDEF => Ok(Self::VerDef),
+            Self::VERNEED => Ok(Self::VerNeed),
+            Self::VERSYM => Ok(Self::VerSym),
+            _ => Err(Error::InvalidSectionHeaderType {
+                machine: config.machine,
+                value: value.0,
+            }),
+        }
+    }
 }
