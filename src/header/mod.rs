@@ -1,6 +1,3 @@
-//! Structures for various header types in the ELF object file format
+pub mod identification;
 
-pub mod compression;
-pub mod elf;
-pub mod program;
-pub mod section;
+pub use identification::*;
